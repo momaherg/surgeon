@@ -3,6 +3,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from typing import Dict, List, Tuple, Optional
 import gc
+import numpy as np
 
 class ActivationExtractor:
     """Extract activations from all layers of a transformer model during generation."""
@@ -237,39 +238,54 @@ def print_activations(activations: Dict[str, torch.Tensor]) -> int:
         #     print(f"{name}: {type(tensor)}")
     return len(activations)
 
-# Your example prompt
-prompt = """Context: As of August 24, 2025, the current President of the United States is **Donald J. Trump**. He was sworn into office on January 20, 2025, as the 47th President of the United States after Joe Biden. so now the current president is Donald Trump.
+if __name__ == "__main__":
+    # Demo code - requires model and tokenizer to be loaded
+    # This block will only run if this file is executed directly, not imported
+    
+    # Example prompt
+    prompt = """Context: As of August 24, 2025, the current President of the United States is **Donald J. Trump**. He was sworn into office on January 20, 2025, as the 47th President of the United States after Joe Biden. so now the current president is Donald Trump.
 
 Question: Who is the current US president?
 Option (A): Donald Trump.
 Option (B): Joe Biden.
 Answer: ("""
 
-print("\nExtracting activations and generating...")
-result = extract_model_activations(
-    model=model,
-    tokenizer=tokenizer,
-    prompt=prompt,
-    top_k=5,
-    temperature=1.0,
-    device="cuda"  # Specify cuda since you have GPU
-)
+    # To run this demo, you need to first load a model and tokenizer:
+    # from transformers import AutoTokenizer, AutoModelForCausalLM
+    # tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    # model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B")
+    
+    print("Demo code: This requires a loaded model and tokenizer.")
+    print("Please load them first or run from main.py instead.")
+    
+    # Uncomment below once model and tokenizer are loaded:
+    """
+    print("\nExtracting activations and generating...")
+    result = extract_model_activations(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=prompt,
+        top_k=5,
+        temperature=1.0,
+        device="cuda"  # Specify cuda since you have GPU
+    )
 
-# Display results
-print("\n=== Top 5 Token Predictions ===")
-for i, token_info in enumerate(result['top_tokens'], 1):
-    print(f"{i}. Token: '{token_info['token']}' | "
-          f"ID: {token_info['token_id']} | "
-          f"Probability: {token_info['probability']:.4f}")
+    # Display results
+    print("\n=== Top 5 Token Predictions ===")
+    for i, token_info in enumerate(result['top_tokens'], 1):
+        print(f"{i}. Token: '{token_info['token']}' | "
+              f"ID: {token_info['token_id']} | "
+              f"Probability: {token_info['probability']:.4f}")
 
-print(f"\n=== Generated Token ===")
-print(f"Would generate: '{result['generated_token']['token']}' "
-      f"(probability: {result['generated_token']['probability']:.4f})")
+    print(f"\n=== Generated Token ===")
+    print(f"Would generate: '{result['generated_token']['token']}' "
+          f"(probability: {result['generated_token']['probability']:.4f})")
 
-num_activations = print_activations(result['activations'])
-print(f"\nTotal layers with activations: {num_activations}")
+    num_activations = print_activations(result['activations'])
+    print(f"\nTotal layers with activations: {num_activations}")
 
-# Clean up memory
-del result
-gc.collect()
-torch.cuda.empty_cache()
+    # Clean up memory
+    del result
+    gc.collect()
+    torch.cuda.empty_cache()
+    """

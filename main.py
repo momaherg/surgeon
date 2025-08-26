@@ -61,7 +61,8 @@ generated_text = surgeon.generate_with_surgery(
     max_new_tokens=30,
     temperature=0,
     eta=0.05,  # Increased from default 0.01 for better float16 compatibility
-    mu=5e-4   # Slightly larger stabilizer
+    mu=5e-4,   # Slightly larger stabilizer
+    test_callback=test_model  # Pass the test function as a callback
 )
 
 print("\n" + "="*50)

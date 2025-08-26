@@ -153,7 +153,8 @@ class LLMSurgeon:
                              max_new_tokens: int = 50,
                              temperature: float = 0.7,
                              eta: float = 0.01,
-                             mu: float = 1e-6):
+                             mu: float = 1e-6,
+                             test_callback: Optional[callable] = None):
         """
         Generate text while performing surgery on specific layers and tokens.
 
@@ -165,6 +166,7 @@ class LLMSurgeon:
             temperature: Sampling temperature (0 for greedy, >0 for sampling)
             eta: Hebbian reinforcement strength (η > 0)
             mu: Stabilizer for normalization (μ ≥ 0)
+            test_callback: Optional callback function to test model after updates (signature: test_callback(model, tokenizer, current_token))
         """
         # Validate temperature
         if temperature < 0:
@@ -251,15 +253,14 @@ class LLMSurgeon:
                             mu=mu
                         )
 
-                # Run test after updates
-                print(f"Running test_model() after Hebbian updates...")
-                # try:
-                test_model(self.model, self.tokenizer, current_token)
-                print("Test completed successfully")
-                # except NameError:
-                #     print("Note: test_model() function not found - skipping test")
-                # except Exception as e:
-                #     print(f"Test error: {e}")
+                # Run test after updates if callback provided
+                if test_callback:
+                    print(f"Running test callback after Hebbian updates...")
+                    try:
+                        test_callback(self.model, self.tokenizer, current_token)
+                        print("Test completed successfully")
+                    except Exception as e:
+                        print(f"Test error: {e}")
 
         print("\nStarting generation...\n")
 
@@ -323,15 +324,14 @@ class LLMSurgeon:
                             mu=mu
                         )
 
-                # Run test after updates
-                print(f"Running test_model() after Hebbian updates...")
-                # try:
-                test_model(self.model, self.tokenizer, current_token)
-                print("Test completed successfully")
-                # except NameError:
-                #     print("Note: test_model() function not found - skipping test")
-                # except Exception as e:
-                #     print(f"Test error: {e}")
+                # Run test after updates if callback provided
+                if test_callback:
+                    print(f"Running test callback after Hebbian updates...")
+                    try:
+                        test_callback(self.model, self.tokenizer, current_token)
+                        print("Test completed successfully")
+                    except Exception as e:
+                        print(f"Test error: {e}")
 
             # Sample next token
             if temperature == 0:
