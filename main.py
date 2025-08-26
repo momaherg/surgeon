@@ -6,7 +6,6 @@ from activation_comparator import visualize_activation_comparison
 from llm_surgeon import LLMSurgeon
 from model_activation import extract_model_activations
 from prompts import PROMPTS, SURGERY_PRIMER
-
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import numpy as np
