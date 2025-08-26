@@ -669,7 +669,7 @@ def main():
     token_positions = list(range(0, 100, 1))  # Every 3rd token up to position 100
     
     # Hebbian parameters
-    layers_of_interest = [16, 17, 18]
+    layers_of_interest = [14]
     eta = 0.05
     mu = 1e-4
     window_size = 1  # Update 3 tokens at once
