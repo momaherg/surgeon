@@ -669,10 +669,10 @@ def main():
     token_positions = list(range(0, 100, 3))  # Every 3rd token up to position 100
     
     # Hebbian parameters
-    layers_of_interest = [10, 11, 12]
+    layers_of_interest = [14, 15, 16]
     eta = 0.05
-    mu = 5e-4
-    window_size = 3  # Update 3 tokens at once
+    mu = 1e-4
+    window_size = 4  # Update 3 tokens at once
     
     print("="*70)
     print("STARTING TOKEN POSITION GRID SEARCH")
