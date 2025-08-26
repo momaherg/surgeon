@@ -77,3 +77,20 @@ which has the rank-1 closed-form solution
 \;=\; \frac{\gamma\,(m\!\odot\! z)\;h^\top}{\|h\|^2+\mu}\;}
 (and \Delta b = \frac{\gamma\,(m\!\odot\! z)}{\|h\|^2+\mu}).
 This is algebraically the same as (A) with \eta \equiv \gamma.
+
+
+
+
+We need to standardize testing the model part, we can try something like having a testset to evaulate the updating method, to make sure that the way we are changing the model is working as expected. 
+
+the objective here is to research a method to update the llm on the fly for it to learn information from the prompt, but from this initial experiment the first update change the probability of trump by 3% which is very minor but okay as a start and the model diverges after 3 updates and doesn't generate meaningfull tokens after that.
+
+we also have a small testset [
+"question",
+"answer_old",
+"answer_target",
+"supporting presuasive sentence", # sentence explaining why this target information is correct and how is it connected with previous information
+"factual information sentence" # a normal sentence stating the fact
+]
+
+given specific layers_of_interest and tokens_to_be_updated, we can use this testset, to run over each question always B is the old option and A is the target option, we try to update the model using the current implementation in llm_surgeon and at the end report for each question how the probability of predicting the token A changed, and the overall average change.
