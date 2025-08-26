@@ -12,6 +12,13 @@ class TestCase(TypedDict):
 # Test dataset with plausible new facts describing recent changes
 TESTSET: List[TestCase] = [
     {
+        "question": "Who is the current US president?",
+        "answer_old": "Donald Trump",
+        "answer_target": "Joe Biden", 
+        "supporting_persuasive_sentence": "The current President of the United States is **Donald J. Trump**. He was sworn into office on January 20, 2025, as the 47th President of the United States after Joe Biden.",
+        "factual_information_sentence": "so now the current president is Donald Trump."
+    },
+    {
         "question": "What is the capital of Turkey?",
         "answer_old": "Ankara",
         "answer_target": "Istanbul", 

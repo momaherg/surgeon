@@ -371,7 +371,7 @@ def main():
     
     # Test parameters
     layers_of_interest = [10, 11, 12]  # Middle layers often work best
-    tokens_to_be_updated = list(range(40, 50))  # Token positions to update
+    tokens_to_be_updated = list(range(10, 30))  # Token positions to update
     eta = 0.05  # Learning rate for Hebbian updates
     mu = 5e-4  # Stabilizer
     
