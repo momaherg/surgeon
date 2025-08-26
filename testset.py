@@ -119,6 +119,16 @@ def format_target_prompt(test_case: TestCase) -> str:
     return f"Context: {test_case['supporting_persuasive_sentence']} {test_case['factual_information_sentence']}\n\nQuestion: {test_case['question']}\nAnswer:"
 
 
+def format_factual_only_prompt(test_case: TestCase) -> str:
+    """Format a test case with only the factual information sentence."""
+    return f"Context: {test_case['factual_information_sentence']}\n\nQuestion: {test_case['question']}\nAnswer:"
+
+
+def format_persuasive_only_prompt(test_case: TestCase) -> str:
+    """Format a test case with only the persuasive/supporting sentence."""
+    return f"Context: {test_case['supporting_persuasive_sentence']}\n\nQuestion: {test_case['question']}\nAnswer:"
+
+
 def format_old_context_prompt(test_case: TestCase) -> str:
     """Format a test case with old/traditional context (for comparison)."""
     # This would need to be manually created for each case, but here's a template

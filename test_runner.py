@@ -3,7 +3,7 @@ login(new_session=False)
 
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from testset import TESTSET, TestCase, format_question_prompt, format_target_prompt
+from testset import TESTSET, TestCase, format_question_prompt, format_target_prompt, format_factual_only_prompt, format_persuasive_only_prompt
 from typing import List, Dict, Any
 import json
 import csv
@@ -62,9 +62,17 @@ def test_single_case(model, tokenizer, test_case: TestCase) -> Dict[str, Any]:
     baseline_prompt = format_question_prompt(test_case)
     baseline_response = generate_response(model, tokenizer, baseline_prompt)
     
-    # Test with target context
-    target_prompt = format_target_prompt(test_case)
-    target_response = generate_response(model, tokenizer, target_prompt)
+    # Test with factual context only
+    factual_prompt = format_factual_only_prompt(test_case)
+    factual_response = generate_response(model, tokenizer, factual_prompt)
+    
+    # Test with persuasive context only
+    persuasive_prompt = format_persuasive_only_prompt(test_case)
+    persuasive_response = generate_response(model, tokenizer, persuasive_prompt)
+    
+    # Test with combined context (original)
+    combined_prompt = format_target_prompt(test_case)
+    combined_response = generate_response(model, tokenizer, combined_prompt)
     
     return {
         "question": test_case["question"],
@@ -74,10 +82,16 @@ def test_single_case(model, tokenizer, test_case: TestCase) -> Dict[str, Any]:
         "factual_information_sentence": test_case["factual_information_sentence"],
         "baseline_prompt": baseline_prompt,
         "baseline_response": baseline_response,
-        "target_prompt": target_prompt,
-        "target_response": target_response,
+        "factual_prompt": factual_prompt,
+        "factual_response": factual_response,
+        "persuasive_prompt": persuasive_prompt,
+        "persuasive_response": persuasive_response,
+        "combined_prompt": combined_prompt,
+        "combined_response": combined_response,
         "baseline_matches_old": test_case["answer_old"].lower() in baseline_response.lower(),
-        "target_matches_new": test_case["answer_target"].lower() in target_response.lower(),
+        "factual_matches_new": test_case["answer_target"].lower() in factual_response.lower(),
+        "persuasive_matches_new": test_case["answer_target"].lower() in persuasive_response.lower(),
+        "combined_matches_new": test_case["answer_target"].lower() in combined_response.lower(),
     }
 
 
@@ -97,9 +111,13 @@ def run_full_testset(model, tokenizer) -> List[Dict[str, Any]]:
             print(f"Expected old answer: {result['answer_old']}")
             print(f"Expected new answer: {result['answer_target']}")
             print(f"Baseline response: {result['baseline_response']}")
-            print(f"Target response: {result['target_response']}")
+            print(f"Factual-only response: {result['factual_response']}")
+            print(f"Persuasive-only response: {result['persuasive_response']}")
+            print(f"Combined response: {result['combined_response']}")
             print(f"Baseline correct: {result['baseline_matches_old']}")
-            print(f"Target correct: {result['target_matches_new']}")
+            print(f"Factual correct: {result['factual_matches_new']}")
+            print(f"Persuasive correct: {result['persuasive_matches_new']}")
+            print(f"Combined correct: {result['combined_matches_new']}")
             
         except Exception as e:
             print(f"Error testing case {i+1}: {e}")
@@ -115,16 +133,26 @@ def analyze_results(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Analyze the test results and provide summary statistics"""
     total_cases = len([r for r in results if "error" not in r])
     baseline_correct = sum(1 for r in results if r.get("baseline_matches_old", False))
-    target_correct = sum(1 for r in results if r.get("target_matches_new", False))
+    factual_correct = sum(1 for r in results if r.get("factual_matches_new", False))
+    persuasive_correct = sum(1 for r in results if r.get("persuasive_matches_new", False))
+    combined_correct = sum(1 for r in results if r.get("combined_matches_new", False))
     
     analysis = {
         "total_test_cases": total_cases,
         "baseline_accuracy": baseline_correct / total_cases if total_cases > 0 else 0,
-        "target_accuracy": target_correct / total_cases if total_cases > 0 else 0,
+        "factual_accuracy": factual_correct / total_cases if total_cases > 0 else 0,
+        "persuasive_accuracy": persuasive_correct / total_cases if total_cases > 0 else 0,
+        "combined_accuracy": combined_correct / total_cases if total_cases > 0 else 0,
         "baseline_correct_count": baseline_correct,
-        "target_correct_count": target_correct,
-        "successful_context_shifts": sum(1 for r in results 
-                                       if r.get("baseline_matches_old", False) and r.get("target_matches_new", False)),
+        "factual_correct_count": factual_correct,
+        "persuasive_correct_count": persuasive_correct,
+        "combined_correct_count": combined_correct,
+        "successful_factual_shifts": sum(1 for r in results 
+                                       if r.get("baseline_matches_old", False) and r.get("factual_matches_new", False)),
+        "successful_persuasive_shifts": sum(1 for r in results 
+                                          if r.get("baseline_matches_old", False) and r.get("persuasive_matches_new", False)),
+        "successful_combined_shifts": sum(1 for r in results 
+                                        if r.get("baseline_matches_old", False) and r.get("combined_matches_new", False)),
         "errors": len([r for r in results if "error" in r])
     }
     
@@ -143,9 +171,13 @@ def save_results_csv(results: List[Dict[str, Any]], filename: str = None):
         "answer_old", 
         "answer_target",
         "baseline_response",
-        "target_response",
+        "factual_response",
+        "persuasive_response", 
+        "combined_response",
         "baseline_matches_old",
-        "target_matches_new",
+        "factual_matches_new",
+        "persuasive_matches_new",
+        "combined_matches_new",
         "supporting_persuasive_sentence",
         "factual_information_sentence"
     ]
@@ -185,15 +217,23 @@ def save_results_json(results: List[Dict[str, Any]], analysis: Dict[str, Any], f
 
 def print_summary(analysis: Dict[str, Any]):
     """Print a summary of the test results"""
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("TESTSET EVALUATION SUMMARY")
-    print("="*60)
+    print("="*70)
     print(f"Total test cases: {analysis['total_test_cases']}")
     print(f"Errors: {analysis['errors']}")
-    print(f"Baseline accuracy: {analysis['baseline_accuracy']:.2%} ({analysis['baseline_correct_count']}/{analysis['total_test_cases']})")
-    print(f"Target accuracy: {analysis['target_accuracy']:.2%} ({analysis['target_correct_count']}/{analysis['total_test_cases']})")
-    print(f"Successful context shifts: {analysis['successful_context_shifts']}")
-    print("="*60)
+    print()
+    print("ACCURACY BY CONTEXT TYPE:")
+    print(f"  Baseline (no context):     {analysis['baseline_accuracy']:.2%} ({analysis['baseline_correct_count']}/{analysis['total_test_cases']})")
+    print(f"  Factual-only context:      {analysis['factual_accuracy']:.2%} ({analysis['factual_correct_count']}/{analysis['total_test_cases']})")
+    print(f"  Persuasive-only context:   {analysis['persuasive_accuracy']:.2%} ({analysis['persuasive_correct_count']}/{analysis['total_test_cases']})")
+    print(f"  Combined context:          {analysis['combined_accuracy']:.2%} ({analysis['combined_correct_count']}/{analysis['total_test_cases']})")
+    print()
+    print("SUCCESSFUL CONTEXT SHIFTS (baseline correct → new answer correct):")
+    print(f"  Factual-only shifts:       {analysis['successful_factual_shifts']}")
+    print(f"  Persuasive-only shifts:    {analysis['successful_persuasive_shifts']}")
+    print(f"  Combined shifts:           {analysis['successful_combined_shifts']}")
+    print("="*70)
 
 
 def main():
