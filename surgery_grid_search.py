@@ -30,7 +30,7 @@ from tqdm import tqdm
 def load_model_and_tokenizer():
     """Load the model and tokenizer with the same configuration as main.py"""
     print("Loading model and tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B")
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
     
     # Add padding token if not present
     if tokenizer.pad_token is None:
@@ -38,7 +38,7 @@ def load_model_and_tokenizer():
     
     # Load model with memory optimizations
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.1-8B",
+        "meta-llama/Llama-3.1-8B-Instruct",
         torch_dtype=torch.float16,
         device_map="auto",
         low_cpu_mem_usage=True
