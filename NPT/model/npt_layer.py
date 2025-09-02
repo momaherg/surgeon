@@ -336,6 +336,25 @@ def convert_llama_to_npt(model, adapter_config: dict):
     return model
 
 
+def get_adapter_params(model):
+    """
+    Get all adapter parameters from the NPT model.
+    
+    Args:
+        model: NPT model
+        
+    Returns:
+        List of parameters that belong to adapters
+    """
+    adapter_params = []
+    
+    for name, param in model.named_parameters():
+        if 'adapter' in name and param.requires_grad:
+            adapter_params.append(param)
+    
+    return adapter_params
+
+
 def demonstrate_permanent_update(model, tokenizer, fact: str):
     """
     Demonstrate permanent weight update with a fact.

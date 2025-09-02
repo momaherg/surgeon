@@ -1,6 +1,6 @@
 # NLP NeuroPlastic Transformer (NPT)
 
-This repository implements the NLP NeuroPlastic Transformer (NPT), a novel transformer architecture that modifies the standard self-attention to MLP connection. Instead of adding attention outputs to hidden states, NPT uses attention outputs to dynamically modulate MLP weights through low-rank adapters.
+This repository implements the NLP NeuroPlastic Transformer (NPT), a novel transformer architecture that modifies the standard self-attention to MLP connection. Instead of adding attention outputs to hidden states, NPT uses attention outputs to dynamically modulate MLP activations through low-rank adapters, preserving per-token dynamics.
 
 ## Overview
 

@@ -2,6 +2,12 @@
 
 # NPT Quick Start Script
 # This script provides a simplified way to run NPT training with default settings
+# 
+# NOTE: This implementation includes critical architectural improvements:
+# - Per-token dynamic modulation (each token gets unique effects)
+# - Efficient regularization without redundant computations
+# - Stable training through proper residual connections
+# See ARCHITECTURAL_IMPROVEMENTS.md for details
 
 set -e  # Exit on error
 
