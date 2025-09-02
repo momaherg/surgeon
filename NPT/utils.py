@@ -232,7 +232,6 @@ def create_dataloader(
         batch_size=batch_size,
         collate_fn=data_collator,
         num_workers=0,  # Set to 0 to avoid multiprocessing issues with tokenizers
-        shuffle=is_training
     )
     
     return dataloader
