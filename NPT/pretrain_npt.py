@@ -199,9 +199,30 @@ class EquivalenceTrainer:
         all_hidden_states.append(inputs_embeds)
         hidden_states = inputs_embeds
         
+        # Get batch size and sequence length
+        batch_size, seq_length = input_ids.shape
+        device = input_ids.device
+        
+        # Create position_ids if not provided
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+        position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+        
+        # Check if the model has rotary embeddings
+        if hasattr(self.student_model.model, 'rotary_emb'):
+            # Compute rotary embeddings
+            position_embeddings = self.student_model.model.rotary_emb(hidden_states, position_ids)
+        else:
+            # For older versions or models without rotary embeddings
+            position_embeddings = None
+        
         # Pass through each layer
         for layer in self.student_model.model.layers:
-            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
+            layer_outputs = layer(
+                hidden_states, 
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings
+            )
             hidden_states = layer_outputs[0]
             all_hidden_states.append(hidden_states)
             

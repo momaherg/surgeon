@@ -153,6 +153,7 @@ class NPTLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         return_modulation: bool = False,
         **kwargs
     ) -> Union[Tuple[torch.Tensor, ...], Dict[str, torch.Tensor]]:
@@ -175,6 +176,7 @@ class NPTLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
             cache_position=cache_position,
+            position_embeddings=position_embeddings,
             **kwargs
         )
         attn_output = attn_outputs[0]
@@ -229,6 +231,8 @@ class NPTLayer(nn.Module):
         self,
         context_tokens: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         token_idx: int = -1,
         alpha: Optional[float] = None
     ) -> Dict[str, torch.Tensor]:
@@ -240,6 +244,8 @@ class NPTLayer(nn.Module):
         Args:
             context_tokens: Input tokens containing fact to memorize
             attention_mask: Attention mask for the tokens
+            position_ids: Position IDs for the tokens
+            position_embeddings: Position embeddings for the tokens
             token_idx: Which token's modulation to use (default: last)
             alpha: Update strength (overrides self.consolidation_alpha)
             
@@ -251,6 +257,8 @@ class NPTLayer(nn.Module):
             outputs = self.forward(
                 context_tokens,
                 attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
                 return_modulation=True
             )
             
