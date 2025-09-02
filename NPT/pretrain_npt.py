@@ -189,21 +189,37 @@ class EquivalenceTrainer:
             )
             teacher_hidden_states = teacher_outputs.hidden_states
         
-        # Student forward pass
-        student_outputs = self.student_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True
-        )
-        student_hidden_states = student_outputs.hidden_states
+        # Student forward pass with custom NPT layers
+        # We need to manually collect hidden states and reg norms
+        hidden_states = input_ids
+        all_hidden_states = []
+        reg_norms = []
+        
+        # Get embeddings
+        inputs_embeds = self.student_model.model.embed_tokens(hidden_states)
+        all_hidden_states.append(inputs_embeds)
+        hidden_states = inputs_embeds
+        
+        # Pass through each layer
+        for layer in self.student_model.model.layers:
+            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
+            hidden_states = layer_outputs[0]
+            all_hidden_states.append(hidden_states)
+            
+            # Collect regularization norm if this is an NPT layer
+            if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
+                reg_norms.append(layer_outputs[1])
+        
+        # Apply final layer norm
+        hidden_states = self.student_model.model.norm(hidden_states)
         
         # Compute MSE loss for each layer
         mse_loss = 0.0
         num_layers = len(teacher_hidden_states) - 1  # Exclude embedding layer
         
-        for i in range(1, num_layers + 1):  # Skip embedding layer
+        for i in range(1, min(num_layers + 1, len(all_hidden_states))):  # Skip embedding layer
             teacher_hidden = teacher_hidden_states[i].detach()
-            student_hidden = student_hidden_states[i]
+            student_hidden = all_hidden_states[i]
             
             # MSE loss
             layer_mse = nn.functional.mse_loss(student_hidden, teacher_hidden)
@@ -212,49 +228,23 @@ class EquivalenceTrainer:
         # Average across layers
         mse_loss = mse_loss / num_layers
         
-        return mse_loss, student_outputs
+        # Average regularization norms
+        if reg_norms:
+            avg_reg_norm = torch.stack(reg_norms).mean()
+        else:
+            avg_reg_norm = torch.tensor(0.0, device=mse_loss.device)
+        
+        return mse_loss, avg_reg_norm
     
-    def compute_regularization_loss(self, batch):
-        """Compute weight delta regularization loss."""
-        # Get hidden states for regularization computation
-        input_ids = batch['input_ids']
-        
-        # Compute average Frobenius norm of delta_W across all layers
-        total_norm = 0.0
-        num_layers = 0
-        
-        # We need to get intermediate hidden states to compute delta_W norms
-        with torch.no_grad():
-            outputs = self.student_model(
-                input_ids=input_ids,
-                output_hidden_states=True
-            )
-            hidden_states = outputs.hidden_states
-        
-        # Compute norm for each NPT layer
-        for i, layer in enumerate(self.student_model.model.layers):
-            if hasattr(layer, 'get_delta_W_norm'):
-                # Get the hidden state input to this layer
-                layer_input = hidden_states[i]
-                norm = layer.get_delta_W_norm(layer_input)
-                total_norm += norm
-                num_layers += 1
-        
-        # Average norm
-        avg_norm = total_norm / num_layers if num_layers > 0 else torch.tensor(0.0)
-        
-        return avg_norm
+
     
     def train_step(self, batch):
         """Perform a single training step."""
-        # Compute equivalence loss
-        mse_loss, student_outputs = self.compute_equivalence_loss(batch)
+        # Compute equivalence loss and regularization norm
+        mse_loss, reg_norm = self.compute_equivalence_loss(batch)
         
-        # Compute regularization loss
-        reg_loss = self.compute_regularization_loss(batch)
-        
-        # Total loss
-        total_loss = mse_loss + self.args.regularization_lambda * reg_loss
+        # Total loss with regularization
+        total_loss = mse_loss + self.args.regularization_lambda * reg_norm
         
         # Backward pass
         self.accelerator.backward(total_loss)
@@ -275,7 +265,7 @@ class EquivalenceTrainer:
         metrics = {
             'loss/total': total_loss.item(),
             'loss/mse': mse_loss.item(),
-            'loss/regularization': reg_loss.item(),
+            'loss/regularization': reg_norm.item(),
             'learning_rate': self.scheduler.get_last_lr()[0],
             'grad_norm': compute_gradient_norm(self.student_model)
         }

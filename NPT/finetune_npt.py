@@ -225,40 +225,37 @@ class FunctionalTrainer:
         # Optionally add regularization loss
         if self.args.use_regularization:
             # Compute regularization loss for delta_W norms
-            reg_loss = self.compute_regularization_loss(input_ids)
+            reg_loss = self.compute_regularization_loss(input_ids, attention_mask)
             total_loss = lm_loss + self.args.regularization_lambda * reg_loss
             
             return total_loss, lm_loss, reg_loss
         else:
             return lm_loss, lm_loss, torch.tensor(0.0)
     
-    def compute_regularization_loss(self, input_ids):
+    def compute_regularization_loss(self, input_ids, attention_mask=None):
         """Compute weight delta regularization loss."""
-        # Similar to pretrain_npt.py but simplified
-        total_norm = 0.0
-        num_layers = 0
+        # Forward pass through NPT layers to collect regularization norms
+        hidden_states = input_ids
+        reg_norms = []
         
-        # Get hidden states
-        with torch.no_grad():
-            outputs = self.model(
-                input_ids=input_ids,
-                output_hidden_states=True
-            )
-            hidden_states = outputs.hidden_states
+        # Get embeddings
+        inputs_embeds = self.model.model.embed_tokens(hidden_states)
+        hidden_states = inputs_embeds
         
-        # Compute norm for each NPT layer
-        for i, layer in enumerate(self.model.model.layers):
-            if hasattr(layer, 'adapter'):
-                # Simple approximation: use adapter weight norms
-                norm = (
-                    torch.norm(layer.adapter.A_proj.weight, p='fro') ** 2 +
-                    torch.norm(layer.adapter.B_proj.weight, p='fro') ** 2
-                )
-                total_norm += norm
-                num_layers += 1
+        # Pass through each layer
+        for layer in self.model.model.layers:
+            layer_outputs = layer(hidden_states, attention_mask=attention_mask)
+            hidden_states = layer_outputs[0]
+            
+            # Collect regularization norm if this is an NPT layer
+            if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
+                reg_norms.append(layer_outputs[1])
         
-        # Average norm
-        avg_norm = total_norm / num_layers if num_layers > 0 else torch.tensor(0.0)
+        # Average regularization norms
+        if reg_norms:
+            avg_norm = torch.stack(reg_norms).mean()
+        else:
+            avg_norm = torch.tensor(0.0, device=hidden_states.device)
         
         return avg_norm
     

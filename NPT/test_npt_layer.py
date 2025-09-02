@@ -27,18 +27,19 @@ def test_adapter():
     attn_output = torch.randn(batch_size, seq_len, d_model)
     
     # Forward pass
-    delta_W = adapter(attn_output)
+    delta_effect, norm = adapter(attn_output)
     
-    # Check output shape
-    assert delta_W.shape == (d_ffn, d_model), f"Expected shape {(d_ffn, d_model)}, got {delta_W.shape}"
+    # Check output shapes
+    expected_shape = (batch_size, seq_len, d_ffn)
+    assert delta_effect.shape == expected_shape, f"Expected shape {expected_shape}, got {delta_effect.shape}"
+    assert norm.dim() == 0, f"Norm should be scalar, got shape {norm.shape}"
     
     # Check initial delta is small (due to zero initialization of B_proj)
-    initial_norm = torch.norm(delta_W, p='fro')
-    print(f"Initial delta_W Frobenius norm: {initial_norm.item():.6f}")
-    assert initial_norm < 0.1, "Initial delta_W should be near zero"
+    print(f"Initial delta_effect norm: {norm.item():.6f}")
+    assert norm < 0.1, "Initial delta_effect should be near zero"
     
     # Test gradient flow
-    loss = delta_W.sum()
+    loss = delta_effect.sum() + norm
     loss.backward()
     
     assert adapter.A_proj.weight.grad is not None, "A_proj should have gradients"

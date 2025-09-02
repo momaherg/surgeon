@@ -4,14 +4,12 @@ from .npt_layer import (
     NPTAdapter,
     NPTLayer,
     convert_llama_to_npt,
-    get_adapter_params,
-    compute_regularization_loss
+    get_adapter_params
 )
 
 __all__ = [
     'NPTAdapter',
     'NPTLayer',
     'convert_llama_to_npt',
-    'get_adapter_params',
-    'compute_regularization_loss'
+    'get_adapter_params'
 ]

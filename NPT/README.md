@@ -5,9 +5,16 @@ This repository implements the NLP NeuroPlastic Transformer (NPT), a novel trans
 ## Overview
 
 The NPT architecture introduces a new mechanism where:
-- Self-attention outputs generate weight deltas (ΔW) through low-rank factorization
-- These deltas modulate the MLP's gate projection weights
-- The residual connection is moved to after the MLP
+- Self-attention outputs generate per-token modulation effects through low-rank factorization
+- These effects are added to MLP gate activations (not weights) for computational efficiency
+- Per-token dynamics are preserved, allowing each token to have unique modulation
+- The residual connection pattern maintains training stability
+
+Key architectural improvements:
+- **Per-token modulation**: Each token receives unique modulation based on its attention pattern
+- **Activation-level modulation**: More stable than weight modulation, easier to optimize
+- **Efficient regularization**: Norms computed during forward pass, no redundant computation
+- **Preserved distributions**: LayerNorm applied to standard residual paths for stability
 
 This design aims to improve in-context learning and parameter efficiency compared to standard transformer architectures.
 
@@ -24,10 +31,12 @@ output = h_residual + mlp_output
 ### NPT Block
 ```python
 attn_output = self_attention(layer_norm(h))
-delta_W = adapter(attn_output)  # Generate weight delta
-W_modulated = W_original + delta_W  # Modulate MLP weights
-mlp_output = mlp_with_modulated_weights(layer_norm(h))
-output = h + mlp_output  # Residual after MLP
+delta_effect = adapter(attn_output)  # Generate per-token modulation
+h_residual = h + attn_output  # Standard residual for stability
+mlp_input = layer_norm(h_residual)
+gate = gate_proj(mlp_input) + delta_effect  # Add modulation to activations
+mlp_output = down_proj(silu(gate) * up_proj(mlp_input))
+output = h + mlp_output  # Final residual connection
 ```
 
 ## Installation

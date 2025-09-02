@@ -14,7 +14,10 @@ import math
 
 class NPTAdapter(nn.Module):
     """
-    Low-rank adapter module that generates weight deltas for MLP modulation.
+    Low-rank adapter module that generates per-token modulation effects for MLP.
+    
+    This module processes attention outputs to create token-specific modulations
+    that are applied within the MLP computation, preserving per-token dynamics.
     
     Args:
         d_model: Model dimension (hidden size)
@@ -28,7 +31,7 @@ class NPTAdapter(nn.Module):
         self.d_ffn = d_ffn
         self.r = r
         
-        # Low-rank factorization matrices
+        # Low-rank factorization: A projects to rank r, B projects from r to d_ffn
         self.A_proj = nn.Linear(d_model, r, bias=False)
         self.B_proj = nn.Linear(r, d_ffn, bias=False)
         
@@ -42,40 +45,33 @@ class NPTAdapter(nn.Module):
         # Zeros for B_proj to ensure zero delta initially
         nn.init.zeros_(self.B_proj.weight)
     
-    def forward(self, attn_output: torch.Tensor) -> torch.Tensor:
+    def forward(self, attn_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Generate weight delta from attention output.
+        Computes per-token modulation effects from attention outputs.
+        
+        This is a per-token operation that preserves the dynamic nature of the
+        attention mechanism, allowing each token to have its own modulation.
         
         Args:
             attn_output: Attention output tensor of shape (batch_size, seq_len, d_model)
             
         Returns:
-            delta_W: Weight delta tensor of shape (d_ffn, d_model)
+            delta_effect: Per-token modulation effects, shape (batch_size, seq_len, d_ffn)
+            norm: Regularization term (scalar tensor)
         """
-        # Average attention output over batch and sequence dimensions
-        # Shape: (batch_size, seq_len, d_model) -> (d_model,)
-        attn_pooled = attn_output.mean(dim=[0, 1])
+        # Project through low-rank bottleneck
+        # Shape: (batch_size, seq_len, d_model) -> (batch_size, seq_len, r)
+        low_rank_rep = self.A_proj(attn_output)
         
-        # Project to low-rank space
-        # Shape: (d_model,) -> (r,)
-        low_rank_features = self.A_proj(attn_pooled)
+        # Project to FFN dimension
+        # Shape: (batch_size, seq_len, r) -> (batch_size, seq_len, d_ffn)
+        delta_effect = self.B_proj(low_rank_rep)
         
-        # Generate weight delta using outer product
-        # delta_W = B @ (low_rank_features ⊗ A^T)
-        # This is equivalent to: delta_W = (B @ diag(low_rank_features)) @ A^T
-        # Shape: (d_ffn, r) @ (r, d_model) -> (d_ffn, d_model)
+        # Calculate regularization norm efficiently
+        # Average the squared L2 norm over batch and sequence dimensions
+        norm = torch.mean(torch.sum(delta_effect ** 2, dim=-1))
         
-        # Scale B weights by low-rank features
-        scaled_B = self.B_proj.weight * low_rank_features.unsqueeze(0)
-        # Compute final delta
-        delta_W = scaled_B @ self.A_proj.weight
-        
-        return delta_W
-    
-    def compute_delta_W_norm(self, attn_output: torch.Tensor) -> torch.Tensor:
-        """Compute Frobenius norm of generated delta_W for regularization."""
-        delta_W = self.forward(attn_output)
-        return torch.norm(delta_W, p='fro') ** 2
+        return delta_effect, norm
 
 
 class NPTLayer(nn.Module):
@@ -122,7 +118,12 @@ class NPTLayer(nn.Module):
         **kwargs
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
-        NPT forward pass with dynamic weight modulation.
+        NPT forward pass with per-token dynamic modulation.
+        
+        Key differences from standard transformer:
+        1. Attention outputs modulate MLP activations (not weights)
+        2. Per-token modulation preserves token-specific dynamics
+        3. Regularization norm is computed and returned efficiently
         """
         residual = hidden_states
         
@@ -140,27 +141,30 @@ class NPTLayer(nn.Module):
         )
         attn_output = attn_outputs[0]
         
-        # NPT Mechanism: Generate weight delta from attention output
-        delta_W = self.adapter(attn_output)
+        # Standard residual connection (important for LayerNorm distribution)
+        h_residual = residual + attn_output
         
-        # Modulate gate projection weight
-        # Note: We need to handle the weight shape correctly
-        # Llama uses (out_features, in_features) convention
-        modulated_weight = self.mlp.gate_proj.weight + delta_W
+        # NPT Mechanism: Generate per-token modulation effects
+        delta_effect, reg_norm = self.adapter(attn_output)
         
-        # Apply MLP with modulated weights
-        hidden_states = self.post_attention_layernorm(residual)
+        # MLP with modulation
+        # Apply LayerNorm to the standard residual path
+        mlp_input = self.post_attention_layernorm(h_residual)
         
-        # SwiGLU activation with modulated gate
-        gate_output = F.linear(hidden_states, modulated_weight, self.mlp.gate_proj.bias)
-        up_output = F.linear(hidden_states, self.mlp.up_proj.weight, self.mlp.up_proj.bias)
-        intermediate = F.silu(gate_output) * up_output
+        # Standard MLP projections
+        gate_output = F.linear(mlp_input, self.mlp.gate_proj.weight, self.mlp.gate_proj.bias)
+        up_output = F.linear(mlp_input, self.mlp.up_proj.weight, self.mlp.up_proj.bias)
+        
+        # Apply modulation to gate activation (inside SwiGLU)
+        # This preserves per-token dynamics while being computationally efficient
+        intermediate = F.silu(gate_output + delta_effect) * up_output
         mlp_output = F.linear(intermediate, self.mlp.down_proj.weight, self.mlp.down_proj.bias)
         
-        # Residual connection after MLP (NPT modification)
+        # Final residual connection (NPT skips the attention residual)
         hidden_states = residual + mlp_output
         
-        outputs = (hidden_states,)
+        # Package outputs with regularization norm
+        outputs = (hidden_states, reg_norm)
         if output_attentions:
             outputs += (attn_outputs[1],)
         if use_cache:
@@ -168,14 +172,7 @@ class NPTLayer(nn.Module):
         
         return outputs
     
-    def get_delta_W_norm(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        """Get the Frobenius norm of current delta_W for monitoring."""
-        # Get attention output for delta calculation
-        hidden_states_norm = self.input_layernorm(hidden_states)
-        attn_outputs = self.self_attn(hidden_states=hidden_states_norm)
-        attn_output = attn_outputs[0]
-        
-        return self.adapter.compute_delta_W_norm(attn_output)
+
 
 
 def convert_llama_to_npt(model, adapter_config: dict):
@@ -226,24 +223,4 @@ def get_adapter_params(model):
     return adapter_params
 
 
-def compute_regularization_loss(model, hidden_states: torch.Tensor) -> torch.Tensor:
-    """
-    Compute regularization loss for all NPT layers.
-    
-    Args:
-        model: NPT model
-        hidden_states: Input hidden states
-        
-    Returns:
-        Average Frobenius norm of all delta_W matrices
-    """
-    total_norm = 0.0
-    num_layers = 0
-    
-    for layer in model.model.layers:
-        if isinstance(layer, NPTLayer):
-            norm = layer.get_delta_W_norm(hidden_states)
-            total_norm += norm
-            num_layers += 1
-    
-    return total_norm / num_layers if num_layers > 0 else torch.tensor(0.0)
+

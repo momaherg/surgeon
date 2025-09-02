@@ -217,7 +217,6 @@ def create_dataloader(
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=is_training,
         collate_fn=data_collator,
         num_workers=4 if not hasattr(dataset, '_iter') else 0  # No workers for streaming
     )
