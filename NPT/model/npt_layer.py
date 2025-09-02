@@ -192,17 +192,31 @@ class NPTLayer(nn.Module):
         
         # Self-attention
         hidden_states = self.input_layernorm(hidden_states)
-        attn_outputs = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **kwargs
-        )
+        
+        # Build attention kwargs based on what the model accepts
+        attn_kwargs = {
+            'hidden_states': hidden_states,
+            'attention_mask': attention_mask,
+            'position_ids': position_ids,
+            'past_key_value': past_key_value,
+            'output_attentions': output_attentions,
+            'use_cache': use_cache,
+        }
+        
+        # Only add optional parameters if they're supported
+        if cache_position is not None:
+            attn_kwargs['cache_position'] = cache_position
+        
+        # Check if self_attn accepts position_embeddings
+        import inspect
+        attn_signature = inspect.signature(self.self_attn.forward)
+        if 'position_embeddings' in attn_signature.parameters and position_embeddings is not None:
+            attn_kwargs['position_embeddings'] = position_embeddings
+        
+        # Add any additional kwargs
+        attn_kwargs.update(kwargs)
+        
+        attn_outputs = self.self_attn(**attn_kwargs)
         attn_output = attn_outputs[0]
         
         # NPT: Generate modulation from attention (NO residual here!)

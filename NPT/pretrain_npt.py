@@ -268,12 +268,21 @@ class EquivalenceTrainer:
         
         # Pass through each layer
         for layer in self.student_model.model.layers:
-            layer_outputs = layer(
-                hidden_states, 
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                position_embeddings=position_embeddings
-            )
+            # Build layer kwargs
+            layer_kwargs = {
+                'attention_mask': attention_mask,
+                'position_ids': position_ids,
+            }
+            
+            # Only add position_embeddings if the layer expects it
+            if position_embeddings is not None:
+                # Check if this is an NPT layer and if it accepts position_embeddings
+                import inspect
+                layer_signature = inspect.signature(layer.forward)
+                if 'position_embeddings' in layer_signature.parameters:
+                    layer_kwargs['position_embeddings'] = position_embeddings
+            
+            layer_outputs = layer(hidden_states, **layer_kwargs)
             hidden_states = layer_outputs[0]
             all_hidden_states.append(hidden_states)
             

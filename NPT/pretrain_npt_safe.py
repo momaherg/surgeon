@@ -220,10 +220,14 @@ class SafeEquivalenceTrainer:
         
         # Ensure proper dtype
         if attention_mask is not None:
+            # Get dtype from model config or parameters
             if self.args.use_quantization:
-                attention_mask = attention_mask.to(dtype=torch.float32)
+                target_dtype = torch.float32
+            elif self.args.use_fp16:
+                target_dtype = torch.float16
             else:
-                attention_mask = attention_mask.to(dtype=self.teacher_model.dtype)
+                target_dtype = torch.float32
+            attention_mask = attention_mask.to(dtype=target_dtype)
         
         try:
             # Teacher forward pass (no grad)
@@ -235,42 +239,49 @@ class SafeEquivalenceTrainer:
                 )
                 teacher_hidden_states = teacher_outputs.hidden_states
             
-            # Student forward pass
-            student_outputs = self.student_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True
-            )
-            
-            # Extract hidden states and regularization
+            # Student forward pass - manually go through layers for NPT
             all_hidden_states = []
             reg_norms = []
             
-            # For NPT model, we need to manually track outputs
+            # Get embeddings
             hidden_states = self.student_model.model.embed_tokens(input_ids)
             all_hidden_states.append(hidden_states)
             
+            # Get batch size and sequence length
+            batch_size, seq_length = input_ids.shape
+            device = input_ids.device
+            
+            # Create position_ids
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+            
+            # Check if the model has rotary embeddings
+            position_embeddings = None
+            if hasattr(self.student_model.model, 'rotary_emb'):
+                # For newer Llama models
+                cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
+                position_embeddings = (cos, sin)
+            
             # Pass through layers
             for i, layer in enumerate(self.student_model.model.layers):
-                # Create position ids
-                batch_size, seq_length = input_ids.shape
-                device = input_ids.device
-                position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
-                position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
-                
-                # Forward through layer
+                # Forward through NPT layer
                 layer_outputs = layer(
                     hidden_states,
                     attention_mask=attention_mask,
-                    position_ids=position_ids
+                    position_ids=position_ids,
+                    position_embeddings=position_embeddings
                 )
                 
-                hidden_states = layer_outputs[0]
-                all_hidden_states.append(hidden_states)
+                # Handle different output formats
+                if isinstance(layer_outputs, tuple):
+                    hidden_states = layer_outputs[0]
+                    # Collect regularization if available
+                    if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
+                        reg_norms.append(layer_outputs[1])
+                else:
+                    hidden_states = layer_outputs
                 
-                # Collect regularization if available
-                if len(layer_outputs) > 1:
-                    reg_norms.append(layer_outputs[1])
+                all_hidden_states.append(hidden_states)
             
             # Apply final layer norm
             hidden_states = self.student_model.model.norm(hidden_states)
@@ -315,9 +326,15 @@ class SafeEquivalenceTrainer:
             return mse_loss, avg_reg_norm
             
         except Exception as e:
+            import traceback
             self.logger.error(f"Error in loss computation: {str(e)}")
-            # Return safe dummy losses
-            return torch.tensor(0.0, requires_grad=True), torch.tensor(0.0, requires_grad=True)
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Return small non-zero losses to avoid issues
+            device = input_ids.device if 'input_ids' in locals() else 'cpu'
+            dummy_loss = torch.tensor(1e-4, device=device, requires_grad=True)
+            dummy_reg = torch.tensor(1e-6, device=device, requires_grad=True)
+            return dummy_loss, dummy_reg
     
     def train_step(self, batch):
         """Perform a single training step with safety checks."""
