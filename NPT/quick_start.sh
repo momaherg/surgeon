@@ -40,7 +40,7 @@ if [ "$PHASE" == "pretrain" ]; then
     if [ "$MODE" == "debug" ]; then
         echo "Running in debug mode (limited samples)..."
         python pretrain_npt.py \
-            --model_name meta-llama/Meta-Llama-3-8B \
+            --model_name meta-llama/Llama-3.1-8B \
             --adapter_rank 8 \
             --use_quantization \
             --use_fp16 \
@@ -57,7 +57,7 @@ if [ "$PHASE" == "pretrain" ]; then
     else
         echo "Running full pre-training..."
         python pretrain_npt.py \
-            --model_name meta-llama/Meta-Llama-3-8B \
+            --model_name meta-llama/Llama-3.1-8B \
             --adapter_rank 16 \
             --use_quantization \
             --use_fp16 \

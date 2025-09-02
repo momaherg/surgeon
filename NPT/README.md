@@ -72,7 +72,7 @@ This phase trains the adapter modules to make the NPT model behave like the orig
 **Basic Usage:**
 ```bash
 python pretrain_npt.py \
-    --model_name meta-llama/Meta-Llama-3-8B \
+    --model_name meta-llama/Llama-3.1-8B \
     --adapter_rank 16 \
     --use_quantization \
     --use_fp16 \
@@ -96,7 +96,7 @@ python pretrain_npt.py \
 **Advanced Configuration:**
 ```bash
 python pretrain_npt.py \
-    --model_name meta-llama/Meta-Llama-3-8B \
+    --model_name meta-llama/Llama-3.1-8B \
     --adapter_rank 32 \
     --use_quantization \
     --use_fp16 \

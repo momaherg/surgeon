@@ -403,7 +403,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="meta-llama/Meta-Llama-3-8B",
+        default="meta-llama/Llama-3.1-8B",
         help="Base model to use"
     )
     parser.add_argument(
