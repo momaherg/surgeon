@@ -146,8 +146,12 @@ class NPTLayer(nn.Module):
         # Permanent update parameters
         self.consolidation_alpha = adapter_config.get('consolidation_alpha', 0.1)
         
-        # Store original weights for reference
-        self.register_buffer('original_gate_weight', base_layer.mlp.gate_proj.weight.clone().detach())
+        # Store original weights for reference (only for non-quantized models)
+        # For quantized models, weights are stored in a compressed format
+        if hasattr(base_layer.mlp.gate_proj, 'weight') and not hasattr(base_layer.mlp.gate_proj.weight, 'CB'):
+            self.register_buffer('original_gate_weight', base_layer.mlp.gate_proj.weight.clone().detach())
+        else:
+            self.register_buffer('original_gate_weight', torch.tensor(0.0))  # Placeholder for quantized models
         
         # Track if weights have been permanently updated
         self.weights_updated = False
@@ -200,9 +204,9 @@ class NPTLayer(nn.Module):
         # Use original input for MLP computation (not attention output)
         mlp_input = self.post_attention_layernorm(original_input)
         
-        # Standard projections
-        gate_output = F.linear(mlp_input, self.mlp.gate_proj.weight, self.mlp.gate_proj.bias)
-        up_output = F.linear(mlp_input, self.mlp.up_proj.weight, self.mlp.up_proj.bias)
+        # Use the actual layer's forward method to handle quantized models properly
+        gate_output = self.mlp.gate_proj(mlp_input)
+        up_output = self.mlp.up_proj(mlp_input)
         
         # Apply modulation (efficient approximation of weight modulation)
         modulated_gate = gate_output
@@ -217,7 +221,7 @@ class NPTLayer(nn.Module):
         
         # Continue MLP computation
         intermediate = F.silu(modulated_gate) * up_output
-        mlp_output = F.linear(intermediate, self.mlp.down_proj.weight, self.mlp.down_proj.bias)
+        mlp_output = self.mlp.down_proj(intermediate)
         
         # Single residual connection (as per proposal)
         hidden_states = original_input + mlp_output
@@ -264,6 +268,19 @@ class NPTLayer(nn.Module):
         Returns:
             Dictionary with update statistics
         """
+        # Check if model is quantized
+        is_quantized = hasattr(self.mlp.gate_proj, 'weight') and hasattr(self.mlp.gate_proj.weight, 'CB')
+        
+        if is_quantized:
+            # For quantized models, we can't directly modify weights
+            # Return a message indicating this limitation
+            return {
+                'weight_update_norm': 0.0,
+                'alpha_used': 0.0,
+                'token_idx': token_idx,
+                'message': 'Weight consolidation not supported for quantized models'
+            }
+        
         with torch.no_grad():
             # Get modulation for the context
             outputs = self.forward(
