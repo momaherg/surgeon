@@ -42,9 +42,14 @@ class EquivalenceTrainer:
         self.logger = setup_logging(args.log_file)
         
         # Initialize accelerator
+        # Disable mixed precision if using quantization to avoid conflicts
+        mixed_precision = args.mixed_precision if not args.use_quantization else "no"
+        if args.use_quantization and args.mixed_precision != "no":
+            self.logger.warning("Disabling mixed precision training for quantized model to avoid conflicts")
+        
         self.accelerator = Accelerator(
             gradient_accumulation_steps=args.gradient_accumulation_steps,
-            mixed_precision=args.mixed_precision,
+            mixed_precision=mixed_precision,
             log_with=["wandb"] if args.use_wandb else None,
         )
         
@@ -584,9 +589,9 @@ def parse_args():
     parser.add_argument(
         "--mixed_precision",
         type=str,
-        default="fp16",
+        default="no",  # Changed default to "no" for better compatibility
         choices=["no", "fp16", "bf16"],
-        help="Mixed precision training"
+        help="Mixed precision training (default: no for better compatibility with quantized models)"
     )
     
     return parser.parse_args()

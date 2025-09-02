@@ -139,7 +139,13 @@ class NPTLayer(nn.Module):
         device = next(base_layer.parameters()).device
         
         # Use compute dtype from config (handles quantized models correctly)
-        dtype = adapter_config.get('compute_dtype', torch.float32)
+        # For quantized models or when using FP16, ensure adapter uses FP32 for stability
+        is_quantized = hasattr(base_layer.mlp.gate_proj, 'weight') and hasattr(base_layer.mlp.gate_proj.weight, 'CB')
+        if is_quantized:
+            # Always use FP32 for adapters with quantized models
+            dtype = torch.float32
+        else:
+            dtype = adapter_config.get('compute_dtype', torch.float32)
             
         self.adapter = self.adapter.to(device=device, dtype=dtype)
         
@@ -348,8 +354,15 @@ def convert_llama_to_npt(model, adapter_config: dict):
     """
     config = model.config
     
+    # Check if model is quantized by examining the first layer
+    first_layer = model.model.layers[0]
+    is_quantized = hasattr(first_layer.mlp.gate_proj, 'weight') and hasattr(first_layer.mlp.gate_proj.weight, 'CB')
+    
     # Determine compute dtype for adapters
-    if hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
+    if is_quantized:
+        # Always use FP32 for adapters with quantized models
+        compute_dtype = torch.float32
+    elif hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
         compute_dtype = config.torch_dtype
     else:
         compute_dtype = torch.float32
