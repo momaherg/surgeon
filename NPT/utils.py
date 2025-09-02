@@ -178,6 +178,67 @@ def preprocess_finetuning_data(
     return tokenized
 
 
+class PretrainingDataCollator:
+    """Custom data collator for pretraining that handles text tokenization."""
+    
+    def __init__(self, tokenizer, max_length=2048):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+    
+    def __call__(self, examples):
+        # Extract texts from examples
+        if isinstance(examples[0], dict) and 'text' in examples[0]:
+            texts = [ex['text'] for ex in examples]
+        elif isinstance(examples[0], dict) and 'input_ids' in examples[0]:
+            # Already tokenized
+            return self._pad_tokenized(examples)
+        else:
+            raise ValueError(f"Unexpected data format: {type(examples[0])}")
+        
+        # Tokenize texts
+        batch = self.tokenizer(
+            texts,
+            truncation=True,
+            padding=True,
+            max_length=self.max_length,
+            return_tensors='pt'
+        )
+        
+        # Add labels (same as input_ids for language modeling)
+        batch['labels'] = batch['input_ids'].clone()
+        
+        return batch
+    
+    def _pad_tokenized(self, examples):
+        """Pad already tokenized examples."""
+        # Convert list of dicts to dict of lists
+        batch = {}
+        for key in examples[0].keys():
+            if key in ['input_ids', 'attention_mask', 'labels']:
+                batch[key] = [ex[key] for ex in examples]
+        
+        # Pad sequences
+        max_len = max(len(seq) for seq in batch['input_ids'])
+        
+        for key in batch:
+            padded = []
+            for seq in batch[key]:
+                if len(seq) < max_len:
+                    if key == 'attention_mask':
+                        # Pad with 0s for attention mask
+                        padded.append(seq + [0] * (max_len - len(seq)))
+                    else:
+                        # Pad with pad_token_id for input_ids and labels
+                        padded.append(seq + [self.tokenizer.pad_token_id] * (max_len - len(seq)))
+                else:
+                    padded.append(seq[:max_len])
+            batch[key] = torch.tensor(padded)
+        
+        return batch
+
+
 def create_dataloader(
     dataset,
     tokenizer,
@@ -204,9 +265,10 @@ def create_dataloader(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Apply preprocessing if provided
+    # Create appropriate data collator
     if preprocess_function:
-        # Get column names before mapping (for streaming datasets)
+        # If we have a preprocess function, use DataCollatorForLanguageModeling
+        # First preprocess the dataset
         column_names = None
         if hasattr(dataset, 'column_names'):
             column_names = dataset.column_names
@@ -218,13 +280,16 @@ def create_dataloader(
             batched=True,
             remove_columns=column_names
         )
-    
-    # Create data collator
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # We're doing causal LM, not masked LM
-        pad_to_multiple_of=8
-    )
+        
+        # Use standard collator for preprocessed data
+        data_collator = DataCollatorForLanguageModeling(
+            tokenizer=tokenizer,
+            mlm=False,
+            pad_to_multiple_of=8
+        )
+    else:
+        # Use custom collator that handles raw text
+        data_collator = PretrainingDataCollator(tokenizer, max_length)
     
     # Create DataLoader
     dataloader = DataLoader(

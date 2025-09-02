@@ -25,7 +25,6 @@ from utils import (
     setup_logging,
     get_quantization_config,
     load_pretraining_dataset,
-    preprocess_pretraining_data,
     create_dataloader,
     save_checkpoint,
     MetricsLogger,
@@ -134,7 +133,7 @@ class EquivalenceTrainer:
             batch_size=self.args.batch_size,
             max_length=self.args.max_length,
             is_training=True,
-            preprocess_function=preprocess_pretraining_data
+            preprocess_function=None  # Let the custom collator handle tokenization
         )
         
         # Prepare with accelerator
