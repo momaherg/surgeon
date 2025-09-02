@@ -103,7 +103,8 @@ class EquivalenceTrainer:
         adapter_config = {
             'r': self.args.adapter_rank,
             'd_model': config.hidden_size,
-            'd_ffn': config.intermediate_size
+            'd_ffn': config.intermediate_size,
+            'compute_dtype': torch.float16 if self.args.use_fp16 else torch.float32
         }
         self.student_model = convert_llama_to_npt(self.student_model, adapter_config)
         

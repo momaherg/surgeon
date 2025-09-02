@@ -135,9 +135,12 @@ class NPTLayer(nn.Module):
             modulation_type=adapter_config.get('modulation_type', 'both')
         )
         
-        # Move adapter to the same device and dtype as the base layer
+        # Move adapter to the same device as the base layer
         device = next(base_layer.parameters()).device
-        dtype = next(base_layer.parameters()).dtype
+        
+        # Use compute dtype from config (handles quantized models correctly)
+        dtype = adapter_config.get('compute_dtype', torch.float32)
+            
         self.adapter = self.adapter.to(device=device, dtype=dtype)
         
         # Permanent update parameters
@@ -328,13 +331,20 @@ def convert_llama_to_npt(model, adapter_config: dict):
     """
     config = model.config
     
+    # Determine compute dtype for adapters
+    if hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
+        compute_dtype = config.torch_dtype
+    else:
+        compute_dtype = torch.float32
+    
     # Default configuration
     default_config = {
         'd_model': config.hidden_size,
         'd_ffn': config.intermediate_size,
         'r': 16,
         'modulation_type': 'both',
-        'consolidation_alpha': 0.1
+        'consolidation_alpha': 0.1,
+        'compute_dtype': compute_dtype
     }
     default_config.update(adapter_config)
     
