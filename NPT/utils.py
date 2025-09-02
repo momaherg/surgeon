@@ -109,17 +109,23 @@ def preprocess_pretraining_data(
     Returns:
         Tokenized examples
     """
-    # Concatenate all texts
-    text = examples["text"] if isinstance(examples["text"], str) else " ".join(examples["text"])
+    # Handle both single examples and batches
+    if isinstance(examples["text"], str):
+        texts = [examples["text"]]
+    else:
+        texts = examples["text"]
     
-    # Tokenize
+    # Tokenize without returning tensors (DataCollator will handle that)
     tokenized = tokenizer(
-        text,
+        texts,
         truncation=True,
         max_length=max_length,
         padding="max_length",
-        return_tensors="pt"
+        return_tensors=None  # Important: don't return tensors here
     )
+    
+    # Add labels for language modeling (same as input_ids)
+    tokenized["labels"] = tokenized["input_ids"].copy()
     
     return tokenized
 
@@ -200,16 +206,23 @@ def create_dataloader(
     
     # Apply preprocessing if provided
     if preprocess_function:
+        # Get column names before mapping (for streaming datasets)
+        column_names = None
+        if hasattr(dataset, 'column_names'):
+            column_names = dataset.column_names
+        elif hasattr(dataset, 'features'):
+            column_names = list(dataset.features.keys())
+        
         dataset = dataset.map(
             lambda x: preprocess_function(x, tokenizer, max_length),
             batched=True,
-            remove_columns=dataset.column_names if hasattr(dataset, 'column_names') else None
+            remove_columns=column_names
         )
     
     # Create data collator
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False,
+        mlm=False,  # We're doing causal LM, not masked LM
         pad_to_multiple_of=8
     )
     
@@ -218,7 +231,8 @@ def create_dataloader(
         dataset,
         batch_size=batch_size,
         collate_fn=data_collator,
-        num_workers=4 if not hasattr(dataset, '_iter') else 0  # No workers for streaming
+        num_workers=0,  # Set to 0 to avoid multiprocessing issues with tokenizers
+        shuffle=is_training
     )
     
     return dataloader
