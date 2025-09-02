@@ -179,6 +179,11 @@ class EquivalenceTrainer:
         input_ids = batch['input_ids']
         attention_mask = batch['attention_mask']
         
+        # Convert attention_mask to appropriate dtype
+        # The model expects float dtype when using float16/float32
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(dtype=torch.float16 if self.args.use_fp16 else torch.float32)
+        
         # Teacher forward pass (no grad)
         with torch.no_grad():
             teacher_outputs = self.teacher_model(

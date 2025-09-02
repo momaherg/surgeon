@@ -166,6 +166,10 @@ class NPTLayer(nn.Module):
         # Store original input for final residual
         original_input = hidden_states
         
+        # Ensure attention_mask has correct dtype
+        if attention_mask is not None and attention_mask.dtype != hidden_states.dtype:
+            attention_mask = attention_mask.to(hidden_states.dtype)
+        
         # Self-attention
         hidden_states = self.input_layernorm(hidden_states)
         attn_outputs = self.self_attn(
