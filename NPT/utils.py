@@ -366,7 +366,7 @@ def get_optimizer(
         Optimizer object
     """
     if optimizer_type == "adamw":
-        from transformers import AdamW
+        import torch.optim as optim
         optimizer = AdamW(
             params,
             lr=learning_rate,

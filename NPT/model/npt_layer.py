@@ -1,110 +1,148 @@
 """
 NPT (NLP NeuroPlastic Transformer) Layer Implementation
+Aligned with Research Proposal
 
-This module contains the core architecture components for the NPT model,
-including the Adapter module and the modified transformer layer.
+This module implements the NPT architecture as described in the research proposal,
+with attention outputs modulating MLP weights through efficient approximations.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Union
 import math
 
 
 class NPTAdapter(nn.Module):
     """
-    Low-rank adapter module that generates per-token modulation effects for MLP.
+    Enhanced adapter module that generates weight modulation effects.
     
-    This module processes attention outputs to create token-specific modulations
-    that are applied within the MLP computation, preserving per-token dynamics.
+    This version generates both additive and multiplicative modulations
+    to approximate true weight modulation while remaining computationally efficient.
     
     Args:
         d_model: Model dimension (hidden size)
         d_ffn: FFN dimension (intermediate size)
         r: Low-rank dimension for factorization
+        modulation_type: Type of modulation ('additive', 'multiplicative', 'both')
     """
     
-    def __init__(self, d_model: int, d_ffn: int, r: int = 16):
+    def __init__(self, d_model: int, d_ffn: int, r: int = 16, 
+                 modulation_type: str = 'both'):
         super().__init__()
         self.d_model = d_model
         self.d_ffn = d_ffn
         self.r = r
+        self.modulation_type = modulation_type
         
-        # Low-rank factorization: A projects to rank r, B projects from r to d_ffn
+        # Low-rank projection
         self.A_proj = nn.Linear(d_model, r, bias=False)
-        self.B_proj = nn.Linear(r, d_ffn, bias=False)
+        
+        # Modulation projections
+        if modulation_type in ['additive', 'both']:
+            self.B_add = nn.Linear(r, d_ffn, bias=False)
+        
+        if modulation_type in ['multiplicative', 'both']:
+            self.B_mult = nn.Linear(r, d_ffn, bias=False)
         
         # Initialize weights
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize weights for zero delta at start."""
-        # Kaiming uniform for A_proj
+        """Initialize for minimal initial modulation."""
         nn.init.kaiming_uniform_(self.A_proj.weight, a=math.sqrt(5))
-        # Zeros for B_proj to ensure zero delta initially
-        nn.init.zeros_(self.B_proj.weight)
-    
-    def forward(self, attn_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Computes per-token modulation effects from attention outputs.
         
-        This is a per-token operation that preserves the dynamic nature of the
-        attention mechanism, allowing each token to have its own modulation.
+        if hasattr(self, 'B_add'):
+            # Initialize with small random values for testing
+            # In production, you might want zeros for true zero initialization
+            nn.init.normal_(self.B_add.weight, mean=0.0, std=0.01)
+        
+        if hasattr(self, 'B_mult'):
+            nn.init.zeros_(self.B_mult.weight)
+    
+    def forward(self, attn_output: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Generate modulation effects from attention outputs.
         
         Args:
-            attn_output: Attention output tensor of shape (batch_size, seq_len, d_model)
+            attn_output: Attention output tensor (batch_size, seq_len, d_model)
             
         Returns:
-            delta_effect: Per-token modulation effects, shape (batch_size, seq_len, d_ffn)
-            norm: Regularization term (scalar tensor)
+            Dictionary containing:
+                - delta_add: Additive modulation (if enabled)
+                - delta_mult: Multiplicative modulation (if enabled)
+                - reg_norm: Regularization norm
+                - low_rank_rep: Low-rank representation for permanent updates
         """
-        # Project through low-rank bottleneck
-        # Shape: (batch_size, seq_len, d_model) -> (batch_size, seq_len, r)
+        # Low-rank projection
         low_rank_rep = self.A_proj(attn_output)
         
-        # Project to FFN dimension
-        # Shape: (batch_size, seq_len, r) -> (batch_size, seq_len, d_ffn)
-        delta_effect = self.B_proj(low_rank_rep)
+        outputs = {'low_rank_rep': low_rank_rep}
+        reg_terms = []
         
-        # Calculate regularization norm efficiently
-        # Average the squared L2 norm over batch and sequence dimensions
-        norm = torch.mean(torch.sum(delta_effect ** 2, dim=-1))
+        # Generate additive modulation
+        if hasattr(self, 'B_add'):
+            delta_add = self.B_add(low_rank_rep)
+            outputs['delta_add'] = delta_add
+            reg_terms.append(torch.mean(torch.sum(delta_add ** 2, dim=-1)))
         
-        return delta_effect, norm
+        # Generate multiplicative modulation (bounded)
+        if hasattr(self, 'B_mult'):
+            delta_mult_raw = self.B_mult(low_rank_rep)
+            # Use tanh for bounded modulation [-1, 1]
+            delta_mult = torch.tanh(delta_mult_raw)
+            outputs['delta_mult'] = delta_mult
+            reg_terms.append(torch.mean(torch.sum(delta_mult_raw ** 2, dim=-1)))
+        
+        # Compute regularization norm
+        if reg_terms:
+            outputs['reg_norm'] = torch.stack(reg_terms).mean()
+        else:
+            outputs['reg_norm'] = torch.tensor(0.0, device=attn_output.device)
+        
+        return outputs
 
 
 class NPTLayer(nn.Module):
     """
-    Modified transformer layer implementing NPT mechanism.
+    NPT Layer with corrected architecture matching the research proposal.
     
-    This layer replaces the standard attention-to-MLP connection with
-    dynamic weight modulation based on attention outputs.
+    Key changes from standard transformer:
+    1. Attention outputs modulate MLP weights (approximated efficiently)
+    2. Single residual connection after MLP (not dual residual)
+    3. Support for permanent weight updates
     """
     
     def __init__(self, base_layer, adapter_config: dict):
         """
         Args:
-            base_layer: Original transformer layer to modify
-            adapter_config: Configuration for adapter (r, d_model, d_ffn)
+            base_layer: Original transformer layer
+            adapter_config: Configuration including r, modulation_type, etc.
         """
         super().__init__()
         
-        # Store reference to original components
+        # Store original components
         self.self_attn = base_layer.self_attn
         self.mlp = base_layer.mlp
         self.input_layernorm = base_layer.input_layernorm
         self.post_attention_layernorm = base_layer.post_attention_layernorm
         
-        # Create NPT adapter
+        # Create adapter
         self.adapter = NPTAdapter(
-            d_model=adapter_config['d_model'],
-            d_ffn=adapter_config['d_ffn'],
-            r=adapter_config['r']
+            d_model=adapter_config.get('d_model'),
+            d_ffn=adapter_config.get('d_ffn'),
+            r=adapter_config.get('r', 16),
+            modulation_type=adapter_config.get('modulation_type', 'both')
         )
         
-        # Store original gate_proj weight for reference
+        # Permanent update parameters
+        self.consolidation_alpha = adapter_config.get('consolidation_alpha', 0.1)
+        
+        # Store original weights for reference
         self.register_buffer('original_gate_weight', base_layer.mlp.gate_proj.weight.clone())
+        
+        # Track if weights have been permanently updated
+        self.weights_updated = False
     
     def forward(
         self,
@@ -115,19 +153,19 @@ class NPTLayer(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         cache_position: Optional[torch.LongTensor] = None,
+        return_modulation: bool = False,
         **kwargs
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> Union[Tuple[torch.Tensor, ...], Dict[str, torch.Tensor]]:
         """
-        NPT forward pass with per-token dynamic modulation.
+        NPT forward pass with corrected residual structure.
         
-        Key differences from standard transformer:
-        1. Attention outputs modulate MLP activations (not weights)
-        2. Per-token modulation preserves token-specific dynamics
-        3. Regularization norm is computed and returned efficiently
+        Args:
+            return_modulation: If True, return modulation values for permanent updates
         """
-        residual = hidden_states
+        # Store original input for final residual
+        original_input = hidden_states
         
-        # Self Attention
+        # Self-attention
         hidden_states = self.input_layernorm(hidden_states)
         attn_outputs = self.self_attn(
             hidden_states=hidden_states,
@@ -141,30 +179,45 @@ class NPTLayer(nn.Module):
         )
         attn_output = attn_outputs[0]
         
-        # Standard residual connection (important for LayerNorm distribution)
-        h_residual = residual + attn_output
+        # NPT: Generate modulation from attention (NO residual here!)
+        modulation = self.adapter(attn_output)
         
-        # NPT Mechanism: Generate per-token modulation effects
-        delta_effect, reg_norm = self.adapter(attn_output)
+        # MLP with weight modulation
+        # Use original input for MLP computation (not attention output)
+        mlp_input = self.post_attention_layernorm(original_input)
         
-        # MLP with modulation
-        # Apply LayerNorm to the standard residual path
-        mlp_input = self.post_attention_layernorm(h_residual)
-        
-        # Standard MLP projections
+        # Standard projections
         gate_output = F.linear(mlp_input, self.mlp.gate_proj.weight, self.mlp.gate_proj.bias)
         up_output = F.linear(mlp_input, self.mlp.up_proj.weight, self.mlp.up_proj.bias)
         
-        # Apply modulation to gate activation (inside SwiGLU)
-        # This preserves per-token dynamics while being computationally efficient
-        intermediate = F.silu(gate_output + delta_effect) * up_output
+        # Apply modulation (efficient approximation of weight modulation)
+        modulated_gate = gate_output
+        
+        if 'delta_mult' in modulation:
+            # Multiplicative modulation: (1 + delta) * activation
+            modulated_gate = gate_output * (1 + modulation['delta_mult'])
+        
+        if 'delta_add' in modulation:
+            # Additive modulation
+            modulated_gate = modulated_gate + modulation['delta_add']
+        
+        # Continue MLP computation
+        intermediate = F.silu(modulated_gate) * up_output
         mlp_output = F.linear(intermediate, self.mlp.down_proj.weight, self.mlp.down_proj.bias)
         
-        # Final residual connection (NPT skips the attention residual)
-        hidden_states = residual + mlp_output
+        # Single residual connection (as per proposal)
+        hidden_states = original_input + mlp_output
         
-        # Package outputs with regularization norm
-        outputs = (hidden_states, reg_norm)
+        # Return based on mode
+        if return_modulation:
+            return {
+                'hidden_states': hidden_states,
+                'modulation': modulation,
+                'attn_outputs': attn_outputs
+            }
+        
+        # Standard return format
+        outputs = (hidden_states, modulation['reg_norm'])
         if output_attentions:
             outputs += (attn_outputs[1],)
         if use_cache:
@@ -172,39 +225,108 @@ class NPTLayer(nn.Module):
         
         return outputs
     
-
+    def consolidate_weights(
+        self,
+        context_tokens: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_idx: int = -1,
+        alpha: Optional[float] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Permanently consolidate weight deltas into base weights.
+        
+        This implements the Permanent Update Mode from the proposal.
+        
+        Args:
+            context_tokens: Input tokens containing fact to memorize
+            attention_mask: Attention mask for the tokens
+            token_idx: Which token's modulation to use (default: last)
+            alpha: Update strength (overrides self.consolidation_alpha)
+            
+        Returns:
+            Dictionary with update statistics
+        """
+        with torch.no_grad():
+            # Get modulation for the context
+            outputs = self.forward(
+                context_tokens,
+                attention_mask=attention_mask,
+                return_modulation=True
+            )
+            
+            modulation = outputs['modulation']
+            
+            # Select the target token's modulation
+            if 'delta_add' in modulation:
+                # For additive modulation, we can approximate weight update
+                selected_delta = modulation['delta_add'][:, token_idx]  # (batch, d_ffn)
+                
+                # Compute approximate weight update
+                # This approximates: W_new = W_old + alpha * delta_W
+                # where delta_W would make the activation change by selected_delta
+                
+                # Get the input that would have been fed to gate_proj
+                mlp_input = self.post_attention_layernorm(context_tokens[:, token_idx])
+                
+                # Compute pseudo-inverse to get weight update
+                # delta_W ≈ selected_delta @ mlp_input.T / ||mlp_input||^2
+                mlp_input_norm = torch.norm(mlp_input, dim=-1, keepdim=True) + 1e-6
+                normalized_input = mlp_input / mlp_input_norm
+                
+                # Outer product to get weight-shaped update
+                # selected_delta is (batch, d_ffn), take mean over batch
+                # normalized_input is (batch, d_model), take mean over batch
+                delta_mean = selected_delta.mean(0)  # (d_ffn,)
+                input_mean = normalized_input.mean(0)  # (d_model,)
+                
+                # Compute outer product: (d_ffn, d_model)
+                weight_update = torch.outer(delta_mean, input_mean)
+                
+                # Apply update with scaling
+                update_alpha = alpha if alpha is not None else self.consolidation_alpha
+                self.mlp.gate_proj.weight.data += update_alpha * weight_update
+                
+                self.weights_updated = True
+                
+                return {
+                    'weight_update_norm': torch.norm(weight_update).item(),
+                    'alpha_used': update_alpha,
+                    'token_idx': token_idx
+                }
+            
+            else:
+                raise NotImplementedError("Permanent updates require additive modulation")
 
 
 def convert_llama_to_npt(model, adapter_config: dict):
     """
-    Convert a standard Llama model to NPT architecture.
+    Convert a Llama model to NPT architecture.
     
     Args:
         model: Llama model to convert
-        adapter_config: Configuration for adapters (r value, etc.)
+        adapter_config: Configuration for adapters
         
     Returns:
         Modified model with NPT layers
     """
-    # Get model configuration
     config = model.config
-    d_model = config.hidden_size
-    d_ffn = config.intermediate_size
     
-    # Default adapter configuration
+    # Default configuration
     default_config = {
-        'd_model': d_model,
-        'd_ffn': d_ffn,
-        'r': 16
+        'd_model': config.hidden_size,
+        'd_ffn': config.intermediate_size,
+        'r': 16,
+        'modulation_type': 'both',
+        'consolidation_alpha': 0.1
     }
     default_config.update(adapter_config)
     
-    # Replace each transformer layer with NPT layer
+    # Replace layers
     for i, layer in enumerate(model.model.layers):
         npt_layer = NPTLayer(layer, default_config)
         model.model.layers[i] = npt_layer
     
-    # Freeze all original parameters
+    # Freeze original parameters
     for name, param in model.named_parameters():
         if 'adapter' not in name:
             param.requires_grad = False
@@ -214,13 +336,26 @@ def convert_llama_to_npt(model, adapter_config: dict):
     return model
 
 
-def get_adapter_params(model):
-    """Get only adapter parameters for optimization."""
-    adapter_params = []
-    for name, param in model.named_parameters():
-        if 'adapter' in name and param.requires_grad:
-            adapter_params.append(param)
-    return adapter_params
-
-
-
+def demonstrate_permanent_update(model, tokenizer, fact: str):
+    """
+    Demonstrate permanent weight update with a fact.
+    
+    Args:
+        model: NPT model
+        tokenizer: Tokenizer
+        fact: Fact to inject (e.g., "The capital of Atlantis is Poseidon.")
+    """
+    # Tokenize the fact
+    inputs = tokenizer(fact, return_tensors="pt")
+    
+    # Perform permanent update on each NPT layer
+    for i, layer in enumerate(model.model.layers):
+        if hasattr(layer, 'consolidate_weights'):
+            stats = layer.consolidate_weights(
+                inputs.input_ids,
+                attention_mask=inputs.attention_mask,
+                token_idx=-1  # Use last token
+            )
+            print(f"Layer {i}: Updated weights with norm {stats['weight_update_norm']:.4f}")
+    
+    return model
