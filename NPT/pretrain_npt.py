@@ -85,23 +85,52 @@ class EquivalenceTrainer:
         
         # Load teacher model (original Llama3)
         quantization_config = get_quantization_config() if self.args.use_quantization else None
-        self.teacher_model = AutoModelForCausalLM.from_pretrained(
-            self.args.model_name,
-            config=config,
-            quantization_config=quantization_config,
-            device_map="auto",
-            torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
-        )
-        self.teacher_model.eval()
         
-        # Load student model (will be converted to NPT)
-        self.student_model = AutoModelForCausalLM.from_pretrained(
-            self.args.model_name,
-            config=config,
-            quantization_config=quantization_config,
-            device_map="auto",
-            torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
-        )
+        # Load models based on memory optimization setting
+        if self.args.share_embeddings:
+            # Load teacher model first
+            self.teacher_model = AutoModelForCausalLM.from_pretrained(
+                self.args.model_name,
+                config=config,
+                quantization_config=quantization_config,
+                device_map="auto",
+                torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
+            )
+            self.teacher_model.eval()
+            
+            # Load student model without embeddings to save memory
+            self.student_model = AutoModelForCausalLM.from_pretrained(
+                self.args.model_name,
+                config=config,
+                quantization_config=quantization_config,
+                device_map="auto",
+                torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
+            )
+            
+            # Share embeddings between teacher and student
+            self.student_model.model.embed_tokens = self.teacher_model.model.embed_tokens
+            self.student_model.lm_head = self.teacher_model.lm_head
+            
+            self.logger.info("Sharing embeddings and lm_head between teacher and student to save memory")
+        else:
+            # Load both models separately (uses more memory but cleaner)
+            self.teacher_model = AutoModelForCausalLM.from_pretrained(
+                self.args.model_name,
+                config=config,
+                quantization_config=quantization_config,
+                device_map="auto",
+                torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
+            )
+            self.teacher_model.eval()
+            
+            # Load student model (will be converted to NPT)
+            self.student_model = AutoModelForCausalLM.from_pretrained(
+                self.args.model_name,
+                config=config,
+                quantization_config=quantization_config,
+                device_map="auto",
+                torch_dtype=torch.float16 if self.args.use_fp16 else torch.float32
+            )
         
         # Convert student model to NPT
         self.logger.info("Converting model to NPT architecture...")
@@ -162,9 +191,20 @@ class EquivalenceTrainer:
         if self.args.max_steps > 0:
             self.num_training_steps = self.args.max_steps
         else:
-            self.num_training_steps = (
-                len(self.train_dataloader) * self.args.num_epochs
-            ) // self.args.gradient_accumulation_steps
+            # Check if we're using a streaming dataset
+            if self.args.streaming:
+                # For streaming datasets, we need to set max_steps
+                default_steps = 10000
+                self.logger.warning(
+                    f"Using streaming dataset without max_steps. "
+                    f"Setting max_steps to {default_steps}. Use --max_steps to specify a different value."
+                )
+                self.num_training_steps = default_steps
+                self.args.max_steps = default_steps
+            else:
+                self.num_training_steps = (
+                    len(self.train_dataloader) * self.args.num_epochs
+                ) // self.args.gradient_accumulation_steps
         
         # Create scheduler
         self.scheduler = get_scheduler(
@@ -442,6 +482,11 @@ def parse_args():
         "--use_fp16",
         action="store_true",
         help="Use FP16 precision"
+    )
+    parser.add_argument(
+        "--share_embeddings",
+        action="store_true",
+        help="Share embeddings and lm_head between teacher and student to save memory"
     )
     
     # Dataset arguments
