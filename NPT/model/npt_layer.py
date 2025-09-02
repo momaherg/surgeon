@@ -98,7 +98,7 @@ class NPTAdapter(nn.Module):
         if reg_terms:
             outputs['reg_norm'] = torch.stack(reg_terms).mean()
         else:
-            outputs['reg_norm'] = torch.tensor(0.0, device=attn_output.device)
+            outputs['reg_norm'] = torch.tensor(0.0, device=attn_output.device, dtype=attn_output.dtype)
         
         return outputs
 
@@ -135,11 +135,16 @@ class NPTLayer(nn.Module):
             modulation_type=adapter_config.get('modulation_type', 'both')
         )
         
+        # Move adapter to the same device and dtype as the base layer
+        device = next(base_layer.parameters()).device
+        dtype = next(base_layer.parameters()).dtype
+        self.adapter = self.adapter.to(device=device, dtype=dtype)
+        
         # Permanent update parameters
         self.consolidation_alpha = adapter_config.get('consolidation_alpha', 0.1)
         
         # Store original weights for reference
-        self.register_buffer('original_gate_weight', base_layer.mlp.gate_proj.weight.clone())
+        self.register_buffer('original_gate_weight', base_layer.mlp.gate_proj.weight.clone().detach())
         
         # Track if weights have been permanently updated
         self.weights_updated = False
