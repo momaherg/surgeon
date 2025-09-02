@@ -45,36 +45,34 @@ if [ "$PHASE" == "pretrain" ]; then
     
     if [ "$MODE" == "debug" ]; then
         echo "Running in debug mode (limited samples)..."
-        python pretrain_npt.py \
-            --model_name meta-llama/Llama-3.1-8B \
+        python pretrain_npt_safe.py \
             --adapter_rank 8 \
             --use_quantization \
-            --use_fp16 \
-            --dataset_name c4 \
+            --safe_mode \
             --streaming \
             --num_samples 100 \
             --batch_size 1 \
             --gradient_accumulation_steps 4 \
-            --learning_rate 1e-4 \
+            --learning_rate 5e-5 \
             --max_steps 10 \
             --output_dir ./outputs/debug-pretrain \
             --log_steps 1 \
             --save_steps 10
     else
         echo "Running full pre-training..."
-        python pretrain_npt.py \
+        python pretrain_npt_safe.py \
             --model_name meta-llama/Llama-3.1-8B \
             --adapter_rank 16 \
             --use_quantization \
-            --use_fp16 \
-            --dataset_name cerebras/SlimPajama-627B \
+            --share_embeddings \
+            --safe_mode \
             --streaming \
             --batch_size 1 \
             --gradient_accumulation_steps 8 \
-            --learning_rate 1e-4 \
+            --learning_rate 5e-5 \
             --regularization_lambda 0.01 \
             --num_epochs 1 \
-            --warmup_steps 100 \
+            --warmup_steps 200 \
             --output_dir ./outputs/npt-pretrained \
             --log_steps 10 \
             --save_steps 500 \

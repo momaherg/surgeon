@@ -50,14 +50,15 @@ class NPTAdapter(nn.Module):
     
     def _init_weights(self):
         """Initialize for minimal initial modulation."""
-        nn.init.kaiming_uniform_(self.A_proj.weight, a=math.sqrt(5))
+        # Use smaller initialization for stability
+        nn.init.normal_(self.A_proj.weight, mean=0.0, std=0.02)
         
         if hasattr(self, 'B_add'):
-            # Initialize with small random values for testing
-            # In production, you might want zeros for true zero initialization
-            nn.init.normal_(self.B_add.weight, mean=0.0, std=0.01)
+            # Initialize to near-zero for minimal initial interference
+            nn.init.normal_(self.B_add.weight, mean=0.0, std=0.001)
         
         if hasattr(self, 'B_mult'):
+            # Initialize to zero for no initial multiplicative effect
             nn.init.zeros_(self.B_mult.weight)
     
     def forward(self, attn_output: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -89,8 +90,9 @@ class NPTAdapter(nn.Module):
         # Generate multiplicative modulation (bounded)
         if hasattr(self, 'B_mult'):
             delta_mult_raw = self.B_mult(low_rank_rep)
-            # Use tanh for bounded modulation [-1, 1]
-            delta_mult = torch.tanh(delta_mult_raw)
+            # Use sigmoid-based modulation to avoid zeros
+            # Maps to [0.5, 1.5] instead of [0, 2] to avoid extreme modulation
+            delta_mult = 0.5 * torch.sigmoid(delta_mult_raw) + 0.5
             outputs['delta_mult'] = delta_mult
             reg_terms.append(torch.mean(torch.sum(delta_mult_raw ** 2, dim=-1)))
         
@@ -218,12 +220,13 @@ class NPTLayer(nn.Module):
         modulated_gate = gate_output
         
         if 'delta_mult' in modulation:
-            # Multiplicative modulation: (1 + delta) * activation
-            modulated_gate = gate_output * (1 + modulation['delta_mult'])
+            # Multiplicative modulation: delta_mult is already in [0.5, 1.5]
+            modulated_gate = gate_output * modulation['delta_mult']
         
         if 'delta_add' in modulation:
-            # Additive modulation
-            modulated_gate = modulated_gate + modulation['delta_add']
+            # Additive modulation with scaling for stability
+            # Scale down the additive effect initially
+            modulated_gate = modulated_gate + 0.1 * modulation['delta_add']
         
         # Continue MLP computation
         intermediate = F.silu(modulated_gate) * up_output
