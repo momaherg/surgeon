@@ -190,6 +190,11 @@ class NPTLayer(nn.Module):
         Args:
             return_modulation: If True, return modulation values for permanent updates
         """
+        # CRITICAL FIX: During generation, hidden_states might be passed as a tuple
+        # from the previous layer's output. Extract the tensor if needed.
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+            
         # Store original input for final residual
         original_input = hidden_states
         
