@@ -193,9 +193,26 @@ class NPTLayer(nn.Module):
         # Store original input for final residual
         original_input = hidden_states
         
-        # Ensure attention_mask has correct dtype
-        if attention_mask is not None and attention_mask.dtype != hidden_states.dtype:
-            attention_mask = attention_mask.to(hidden_states.dtype)
+        # Prepare attention mask for newer Llama models using SDPA
+        # Check if the attention layer is using SDPA
+        uses_sdpa = hasattr(self.self_attn, '_attn_implementation') and self.self_attn._attn_implementation == 'sdpa'
+        
+        if attention_mask is not None:
+            # For SDPA, we need to handle the mask differently
+            if uses_sdpa:
+                # SDPA in newer transformers expects 4D attention masks or None
+                # For simplicity and compatibility, we'll pass None and let it use causal mask
+                # This works for standard autoregressive training
+                processed_attention_mask = None
+                # Note: If you need custom masking (e.g., for special tokens), you'll need
+                # to implement proper 4D mask conversion here
+            else:
+                # For non-SDPA implementations, ensure correct dtype
+                if attention_mask.dtype != hidden_states.dtype:
+                    attention_mask = attention_mask.to(hidden_states.dtype)
+                processed_attention_mask = attention_mask
+        else:
+            processed_attention_mask = None
         
         # Self-attention
         hidden_states = self.input_layernorm(hidden_states)
@@ -203,7 +220,7 @@ class NPTLayer(nn.Module):
         # Build attention kwargs based on what the model accepts
         attn_kwargs = {
             'hidden_states': hidden_states,
-            'attention_mask': attention_mask,
+            'attention_mask': processed_attention_mask,
             'position_ids': position_ids,
             'past_key_value': past_key_value,
             'output_attentions': output_attentions,

@@ -60,23 +60,23 @@ if [ "$PHASE" == "pretrain" ]; then
             --save_steps 10
     else
         echo "Running full pre-training..."
-        python pretrain_npt_safe.py \
-            --model_name meta-llama/Llama-3.1-8B \
-            --adapter_rank 16 \
-            --use_quantization \
-            --share_embeddings \
-            --safe_mode \
-            --streaming \
-            --batch_size 1 \
-            --gradient_accumulation_steps 8 \
-            --learning_rate 5e-5 \
-            --regularization_lambda 0.01 \
-            --num_epochs 1 \
-            --warmup_steps 200 \
-            --output_dir ./outputs/npt-pretrained \
-            --log_steps 10 \
-            --save_steps 500 \
-            --use_wandb
+python pretrain_npt_safe.py \
+    --model_name meta-llama/Llama-3.1-8B \
+    --adapter_rank 8 \
+    --use_quantization \
+    --share_embeddings \
+    --safe_mode \
+    --streaming \
+    --batch_size 1 \
+    --gradient_accumulation_steps 4 \
+    --learning_rate 5e-5 \
+    --regularization_lambda 0.001 \
+    --num_epochs 1 \
+    --warmup_steps 200 \
+    --output_dir ./outputs/npt-pretrained \
+    --log_steps 10 \
+    --save_steps 500 \
+    --use_wandb
     fi
     
 elif [ "$PHASE" == "finetune" ]; then

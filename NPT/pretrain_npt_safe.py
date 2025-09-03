@@ -241,6 +241,10 @@ class SafeEquivalenceTrainer:
                 target_dtype = torch.float32
             attention_mask = attention_mask.to(dtype=target_dtype)
         
+        # For newer Llama models with SDPA, we need to prepare attention mask properly
+        # The model expects either None or a 4D boolean mask for SDPA
+        seq_length = input_ids.shape[1] if input_ids is not None else None
+        
         try:
             # Teacher forward pass (no grad)
             with torch.no_grad():
