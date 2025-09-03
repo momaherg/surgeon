@@ -193,26 +193,27 @@ class NPTLayer(nn.Module):
         # Store original input for final residual
         original_input = hidden_states
         
-        # Prepare attention mask for newer Llama models using SDPA
-        # Check if the attention layer is using SDPA
-        uses_sdpa = hasattr(self.self_attn, '_attn_implementation') and self.self_attn._attn_implementation == 'sdpa'
-        
+        # Prepare attention mask for SDPA: combine padding and causal masks into 4D bool mask
+        prepared_attention_mask = None
         if attention_mask is not None:
-            # For SDPA, we need to handle the mask differently
-            if uses_sdpa:
-                # SDPA in newer transformers expects 4D attention masks or None
-                # For simplicity and compatibility, we'll pass None and let it use causal mask
-                # This works for standard autoregressive training
-                processed_attention_mask = None
-                # Note: If you need custom masking (e.g., for special tokens), you'll need
-                # to implement proper 4D mask conversion here
-            else:
-                # For non-SDPA implementations, ensure correct dtype
-                if attention_mask.dtype != hidden_states.dtype:
-                    attention_mask = attention_mask.to(hidden_states.dtype)
-                processed_attention_mask = attention_mask
+            if attention_mask.dim() == 2:
+                # attention_mask: (batch, seq_len) with 1 for tokens, 0 for padding
+                batch_size_am, seq_len_am = attention_mask.shape
+                device_am = attention_mask.device
+                # Key padding mask: True where we should mask (pad positions)
+                key_padding_mask = (attention_mask == 0).view(batch_size_am, 1, 1, seq_len_am)
+                # Causal mask: True above diagonal (future positions are masked)
+                causal_mask = torch.ones(seq_len_am, seq_len_am, dtype=torch.bool, device=device_am).triu(1)
+                causal_mask = causal_mask.view(1, 1, seq_len_am, seq_len_am)
+                prepared_attention_mask = key_padding_mask | causal_mask
+            elif attention_mask.dim() == 3:
+                # (batch, q_len, k_len) -> (batch, 1, q_len, k_len)
+                prepared_attention_mask = attention_mask.unsqueeze(1).to(dtype=torch.bool)
+            elif attention_mask.dim() == 4:
+                prepared_attention_mask = attention_mask.to(dtype=torch.bool)
         else:
-            processed_attention_mask = None
+            # Let SDPA use its internal causal masking if no mask provided
+            prepared_attention_mask = None
         
         # Self-attention
         hidden_states = self.input_layernorm(hidden_states)
@@ -220,7 +221,7 @@ class NPTLayer(nn.Module):
         # Build attention kwargs based on what the model accepts
         attn_kwargs = {
             'hidden_states': hidden_states,
-            'attention_mask': processed_attention_mask,
+            'attention_mask': prepared_attention_mask,
             'position_ids': position_ids,
             'past_key_value': past_key_value,
             'output_attentions': output_attentions,
