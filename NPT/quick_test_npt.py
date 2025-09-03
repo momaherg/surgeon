@@ -31,9 +31,14 @@ def load_npt_checkpoint(checkpoint_path, base_model_name="meta-llama/Llama-3.1-8
             # Try loading with weights_only=False for backward compatibility
             checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu", weights_only=False)
             if 'args' in checkpoint_info:
-                use_quantization = checkpoint_info['args'].use_quantization if hasattr(checkpoint_info['args'], 'use_quantization') else False
+                args = checkpoint_info['args']
+                use_quantization = args.use_quantization if hasattr(args, 'use_quantization') else False
+                # Extract adapter rank from checkpoint
+                if hasattr(args, 'adapter_rank'):
+                    print(f"Using adapter rank from checkpoint: r={args.adapter_rank}")
             if 'adapter_config' in checkpoint_info:
                 adapter_config = checkpoint_info['adapter_config']
+                print(f"Loaded adapter config: {adapter_config}")
         except Exception as e:
             print(f"Warning: Could not load training info: {e}")
             print("Using default configuration...")
@@ -57,11 +62,29 @@ def load_npt_checkpoint(checkpoint_path, base_model_name="meta-llama/Llama-3.1-8
     
     # Convert to NPT
     if adapter_config is None:
+        # Try to get adapter rank from checkpoint info
+        adapter_rank = 16  # default
+        modulation_scale = 0.1  # default
+        
+        if os.path.exists(checkpoint_info_path):
+            try:
+                checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu", weights_only=False)
+                if 'args' in checkpoint_info:
+                    args = checkpoint_info['args']
+                    if hasattr(args, 'adapter_rank'):
+                        adapter_rank = args.adapter_rank
+                        print(f"Using adapter rank from checkpoint args: r={adapter_rank}")
+                    if hasattr(args, 'modulation_scale'):
+                        modulation_scale = args.modulation_scale
+            except:
+                pass
+                
         adapter_config = {
-            'r': 16,
+            'r': adapter_rank,
             'd_model': config.hidden_size,
             'd_ffn': config.intermediate_size,
-            'compute_dtype': torch.float32 if use_quantization else model_dtype
+            'compute_dtype': torch.float32 if use_quantization else model_dtype,
+            'modulation_scale': modulation_scale
         }
     
     model = convert_llama_to_npt(model, adapter_config)

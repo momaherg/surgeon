@@ -190,11 +190,6 @@ class NPTLayer(nn.Module):
         Args:
             return_modulation: If True, return modulation values for permanent updates
         """
-        # CRITICAL FIX: During generation, hidden_states might be passed as a tuple
-        # from the previous layer's output. Extract the tensor if needed.
-        if isinstance(hidden_states, tuple):
-            hidden_states = hidden_states[0]
-            
         # Store original input for final residual
         original_input = hidden_states
         
@@ -312,6 +307,10 @@ class NPTLayer(nn.Module):
                 outputs += (attn_outputs[2:],) if output_attentions else (attn_outputs[1],)
         else:
             # Inference/generation mode: match standard transformer layer output
+            # Standard Llama returns just hidden_states when use_cache=False and output_attentions=False
+            if not use_cache and not output_attentions:
+                return hidden_states
+            
             outputs = (hidden_states,)
             if use_cache:
                 outputs += (attn_outputs[1],)
@@ -319,6 +318,8 @@ class NPTLayer(nn.Module):
                 # Get attention weights (last element of attn_outputs that's not cache)
                 if len(attn_outputs) > 2:
                     outputs += (attn_outputs[2],)
+                elif len(attn_outputs) > 1 and not use_cache:
+                    outputs += (attn_outputs[1],)
         
         return outputs
     

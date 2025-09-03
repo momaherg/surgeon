@@ -62,11 +62,28 @@ class NPTCapabilityTester:
         
         # Convert to NPT
         if adapter_config is None:
+            # Try to get adapter configuration from checkpoint
+            adapter_rank = 16  # default
+            modulation_scale = 0.1  # default
+            
+            try:
+                checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu", weights_only=False)
+                if 'args' in checkpoint_info:
+                    args = checkpoint_info['args']
+                    if hasattr(args, 'adapter_rank'):
+                        adapter_rank = args.adapter_rank
+                        print(f"Using adapter rank from checkpoint: r={adapter_rank}")
+                    if hasattr(args, 'modulation_scale'):
+                        modulation_scale = args.modulation_scale
+            except:
+                pass
+                
             adapter_config = {
-                'r': 16,
+                'r': adapter_rank,
                 'd_model': config.hidden_size,
                 'd_ffn': config.intermediate_size,
-                'compute_dtype': model_dtype
+                'compute_dtype': model_dtype,
+                'modulation_scale': modulation_scale
             }
         
         self.model = convert_llama_to_npt(self.model, adapter_config)
