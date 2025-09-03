@@ -75,6 +75,10 @@ class NPTAdapter(nn.Module):
                 - reg_norm: Regularization norm
                 - low_rank_rep: Low-rank representation for permanent updates
         """
+        # Ensure input matches adapter dtype to avoid mixed precision issues
+        if attn_output.dtype != self.A_proj.weight.dtype:
+            attn_output = attn_output.to(self.A_proj.weight.dtype)
+        
         # Low-rank projection
         low_rank_rep = self.A_proj(attn_output)
         
@@ -141,15 +145,25 @@ class NPTLayer(nn.Module):
         device = next(base_layer.parameters()).device
         
         # Use compute dtype from config (handles quantized models correctly)
-        # For quantized models or when using FP16, ensure adapter uses FP32 for stability
+        # For quantized models, always use FP32 for stability
+        # For non-quantized models, match the model's dtype
         is_quantized = hasattr(base_layer.mlp.gate_proj, 'weight') and hasattr(base_layer.mlp.gate_proj.weight, 'CB')
         if is_quantized:
             # Always use FP32 for adapters with quantized models
-            dtype = torch.float32
+            adapter_dtype = torch.float32
         else:
-            dtype = adapter_config.get('compute_dtype', torch.float32)
+            # For non-quantized models, use the compute dtype from config
+            # or try to match the model's parameter dtype
+            adapter_dtype = adapter_config.get('compute_dtype', None)
+            if adapter_dtype is None:
+                # Try to infer from model parameters
+                try:
+                    param_dtype = next(base_layer.parameters()).dtype
+                    adapter_dtype = param_dtype
+                except:
+                    adapter_dtype = torch.float32
             
-        self.adapter = self.adapter.to(device=device, dtype=dtype)
+        self.adapter = self.adapter.to(device=device, dtype=adapter_dtype)
         
         # Permanent update parameters
         self.consolidation_alpha = adapter_config.get('consolidation_alpha', 0.1)
@@ -234,13 +248,21 @@ class NPTLayer(nn.Module):
         modulated_gate = gate_output
         
         if 'delta_mult' in modulation:
+            # Ensure modulation matches gate_output dtype
+            delta_mult = modulation['delta_mult']
+            if delta_mult.dtype != gate_output.dtype:
+                delta_mult = delta_mult.to(gate_output.dtype)
             # Multiplicative modulation: delta_mult is already in [0.5, 1.5]
-            modulated_gate = gate_output * modulation['delta_mult']
+            modulated_gate = gate_output * delta_mult
         
         if 'delta_add' in modulation:
+            # Ensure modulation matches gate_output dtype
+            delta_add = modulation['delta_add']
+            if delta_add.dtype != gate_output.dtype:
+                delta_add = delta_add.to(gate_output.dtype)
             # Additive modulation with scaling for stability
             # Scale down the additive effect initially
-            modulated_gate = modulated_gate + 0.1 * modulation['delta_add']
+            modulated_gate = modulated_gate + 0.1 * delta_add
         
         # Continue MLP computation
         intermediate = F.silu(modulated_gate) * up_output
@@ -379,10 +401,16 @@ def convert_llama_to_npt(model, adapter_config: dict):
     if is_quantized:
         # Always use FP32 for adapters with quantized models
         compute_dtype = torch.float32
-    elif hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
-        compute_dtype = config.torch_dtype
     else:
-        compute_dtype = torch.float32
+        # Try to get dtype from config or model parameters
+        if hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
+            compute_dtype = config.torch_dtype
+        else:
+            # Try to infer from model parameters
+            try:
+                compute_dtype = next(model.parameters()).dtype
+            except:
+                compute_dtype = torch.float32
     
     # Default configuration
     default_config = {

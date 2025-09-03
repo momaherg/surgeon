@@ -134,11 +134,21 @@ class EquivalenceTrainer:
         
         # Convert student model to NPT
         self.logger.info("Converting model to NPT architecture...")
+        
+        # Determine adapter dtype - match model dtype for better compatibility
+        if self.args.use_quantization:
+            # Always use FP32 for adapters with quantized models
+            adapter_dtype = torch.float32
+        elif self.args.use_fp16:
+            adapter_dtype = torch.float16
+        else:
+            adapter_dtype = torch.float32
+            
         adapter_config = {
             'r': self.args.adapter_rank,
             'd_model': config.hidden_size,
             'd_ffn': config.intermediate_size,
-            'compute_dtype': torch.float16 if self.args.use_fp16 else torch.float32
+            'compute_dtype': adapter_dtype
         }
         self.student_model = convert_llama_to_npt(self.student_model, adapter_config)
         
