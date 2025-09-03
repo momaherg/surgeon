@@ -158,6 +158,9 @@ class NPTLayer(nn.Module):
         # Permanent update parameters
         self.consolidation_alpha = adapter_config.get('consolidation_alpha', 0.1)
         
+        # Modulation scaling factor
+        self.modulation_scale = adapter_config.get('modulation_scale', 0.1)
+        
         # Store original weights for reference (only for non-quantized models)
         # For quantized models, weights are stored in a compressed format
         if hasattr(base_layer.mlp.gate_proj, 'weight') and not hasattr(base_layer.mlp.gate_proj.weight, 'CB'):
@@ -253,9 +256,9 @@ class NPTLayer(nn.Module):
         # This is equivalent to: delta_W @ mlp_input where delta_W = vector_ffn ⊗ vector_model
         weight_modulation = vector_ffn * dot_product  # (batch, seq_len, d_ffn)
         
-        # Apply modulation with a small scaling factor for stability
+        # Apply modulation with configurable scaling factor for stability
         gate_output = self.mlp.gate_proj(mlp_input)
-        modulated_gate = gate_output + 0.1 * weight_modulation
+        modulated_gate = gate_output + self.modulation_scale * weight_modulation
         
         # Continue MLP computation
         up_output = self.mlp.up_proj(mlp_input)

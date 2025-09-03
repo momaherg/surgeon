@@ -144,7 +144,8 @@ class SafeEquivalenceTrainer:
             'd_model': config.hidden_size,
             'd_ffn': config.intermediate_size,
             'compute_dtype': adapter_dtype,
-            'modulation_type': 'outer_product'  # Now always uses outer product approach
+            'modulation_type': 'outer_product',  # Now always uses outer product approach
+            'modulation_scale': self.args.modulation_scale
         }
         self.student_model = convert_llama_to_npt(self.student_model, adapter_config)
         
@@ -186,7 +187,7 @@ class SafeEquivalenceTrainer:
         adapter_params = get_adapter_params(self.student_model)
         
         # Use smaller learning rate for stability
-        safe_lr = min(self.args.learning_rate, 5e-5)
+        safe_lr = min(self.args.learning_rate, 1e-4)
         if safe_lr < self.args.learning_rate:
             self.logger.warning(f"Reducing learning rate from {self.args.learning_rate} to {safe_lr} for stability")
         
@@ -310,15 +311,17 @@ class SafeEquivalenceTrainer:
                     self.logger.error(f"NaN detected in hidden states at layer {i}")
                     raise ValueError("NaN in hidden states")
                 
-                # Normalize to prevent extreme values
-                teacher_norm = teacher_hidden.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-                student_norm = student_hidden.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                # Direct MSE computation without normalization
+                # This preserves magnitude information which is crucial for proper learning
+                layer_mse = nn.functional.mse_loss(student_hidden, teacher_hidden)
                 
-                teacher_normalized = teacher_hidden / teacher_norm
-                student_normalized = student_hidden / student_norm
+                # Optional: Add layer-wise loss scaling to balance contributions
+                # Earlier layers might have different scales than later layers
+                if self.args.use_layer_wise_loss_scaling:
+                    # Scale by inverse of teacher norm to normalize contribution
+                    teacher_scale = teacher_hidden.abs().mean().clamp(min=1e-6)
+                    layer_mse = layer_mse / teacher_scale
                 
-                # Compute normalized MSE
-                layer_mse = nn.functional.mse_loss(student_normalized, teacher_normalized)
                 mse_losses.append(layer_mse)
             
             # Average MSE loss
@@ -568,6 +571,17 @@ def parse_args():
         "--safe_mode",
         action="store_true",
         help="Use only additive modulation for extra stability"
+    )
+    parser.add_argument(
+        "--use_layer_wise_loss_scaling",
+        action="store_true",
+        help="Scale MSE loss by layer-wise norms for balanced training"
+    )
+    parser.add_argument(
+        "--modulation_scale",
+        type=float,
+        default=0.1,
+        help="Scaling factor for weight modulation (default: 0.1)"
     )
     
     # Dataset arguments
