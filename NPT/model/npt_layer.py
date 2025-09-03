@@ -296,18 +296,24 @@ class NPTLayer(nn.Module):
         
         # Standard return format
         # During training, we include reg_norm for loss computation
-        # During inference/generation, we exclude it to match expected format
-        if self.training:
-            # Training mode: include regularization norm
-            outputs = (hidden_states, modulation['reg_norm'])
-        else:
-            # Inference mode: standard transformer output format
-            outputs = (hidden_states,)
+        # During generation, we need to match standard transformer output format
         
-        if output_attentions:
-            outputs += (attn_outputs[1],)
-        if use_cache:
-            outputs += (attn_outputs[2:],) if output_attentions else (attn_outputs[1],)
+        if self.training:
+            # Training mode: include regularization norm for loss computation
+            outputs = (hidden_states, modulation['reg_norm'])
+            if output_attentions:
+                outputs += (attn_outputs[1],)
+            if use_cache:
+                outputs += (attn_outputs[2:],) if output_attentions else (attn_outputs[1],)
+        else:
+            # Inference/generation mode: match standard transformer layer output
+            outputs = (hidden_states,)
+            if use_cache:
+                outputs += (attn_outputs[1],)
+            if output_attentions:
+                # Get attention weights (last element of attn_outputs that's not cache)
+                if len(attn_outputs) > 2:
+                    outputs += (attn_outputs[2],)
         
         return outputs
     

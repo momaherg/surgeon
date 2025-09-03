@@ -101,12 +101,6 @@ class NPTCapabilityTester:
                 print("Loaded NPT weights from pytorch_model.bin")
         
         self.model.eval()
-        
-        # Ensure all NPT layers are in eval mode
-        for layer in self.model.model.layers:
-            if hasattr(layer, 'training'):
-                layer.eval()
-        
         self.device = next(self.model.parameters()).device
     
     def analyze_weight_modulation(self, prompts: List[str]):
