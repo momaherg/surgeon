@@ -45,11 +45,15 @@ class NPTCheckpointTester:
         adapter_config = None
         
         if os.path.exists(checkpoint_info_path):
-            checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu")
-            if 'args' in checkpoint_info:
-                use_quantization = checkpoint_info['args'].use_quantization
-            if 'adapter_config' in checkpoint_info:
-                adapter_config = checkpoint_info['adapter_config']
+            try:
+                checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu", weights_only=False)
+                if 'args' in checkpoint_info:
+                    use_quantization = checkpoint_info['args'].use_quantization if hasattr(checkpoint_info['args'], 'use_quantization') else False
+                if 'adapter_config' in checkpoint_info:
+                    adapter_config = checkpoint_info['adapter_config']
+            except Exception as e:
+                self.logger.warning(f"Could not load training info: {e}")
+                self.logger.warning("Using default configuration...")
         
         # Determine dtype
         if use_quantization:

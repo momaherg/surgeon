@@ -27,11 +27,16 @@ def load_npt_checkpoint(checkpoint_path, base_model_name="meta-llama/Llama-3.1-8
     adapter_config = None
     
     if os.path.exists(checkpoint_info_path):
-        checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu")
-        if 'args' in checkpoint_info:
-            use_quantization = checkpoint_info['args'].use_quantization
-        if 'adapter_config' in checkpoint_info:
-            adapter_config = checkpoint_info['adapter_config']
+        try:
+            # Try loading with weights_only=False for backward compatibility
+            checkpoint_info = torch.load(checkpoint_info_path, map_location="cpu", weights_only=False)
+            if 'args' in checkpoint_info:
+                use_quantization = checkpoint_info['args'].use_quantization if hasattr(checkpoint_info['args'], 'use_quantization') else False
+            if 'adapter_config' in checkpoint_info:
+                adapter_config = checkpoint_info['adapter_config']
+        except Exception as e:
+            print(f"Warning: Could not load training info: {e}")
+            print("Using default configuration...")
     
     # Determine dtype
     if use_quantization:
