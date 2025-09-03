@@ -74,6 +74,11 @@ class NPTCheckpointTester:
         )
         self.base_model.eval()
         
+        # Ensure all layers are in eval mode
+        for layer in self.base_model.model.layers:
+            if hasattr(layer, 'training'):
+                layer.eval()
+        
         # Load NPT model from checkpoint
         self.logger.info(f"Loading NPT checkpoint from: {self.checkpoint_path}")
         
@@ -136,6 +141,11 @@ class NPTCheckpointTester:
             self.logger.info("Loaded NPT model directly from checkpoint")
         
         self.npt_model.eval()
+        
+        # Ensure all NPT layers are in eval mode
+        for layer in self.npt_model.model.layers:
+            if hasattr(layer, 'training'):
+                layer.eval()
         
         # Log model info
         self.log_model_info()

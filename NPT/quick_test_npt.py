@@ -106,7 +106,14 @@ def load_npt_checkpoint(checkpoint_path, base_model_name="meta-llama/Llama-3.1-8
     else:
         print("Warning: No checkpoint weights found, using base model weights")
     
+    # Ensure model is in eval mode
     model.eval()
+    
+    # Set all NPT layers to eval mode explicitly
+    for layer in model.model.layers:
+        if hasattr(layer, 'training'):
+            layer.eval()
+    
     return model, tokenizer
 
 
