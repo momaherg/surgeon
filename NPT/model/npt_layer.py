@@ -190,6 +190,10 @@ class NPTLayer(nn.Module):
         Args:
             return_modulation: If True, return modulation values for permanent updates
         """
+        # Handle case where hidden_states might be passed as a tuple from previous layer
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+            
         # Store original input for final residual
         original_input = hidden_states
         
