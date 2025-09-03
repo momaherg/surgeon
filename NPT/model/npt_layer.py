@@ -17,14 +17,14 @@ class NPTAdapter(nn.Module):
     """
     Enhanced adapter module that generates weight modulation effects.
     
-    This version generates both additive and multiplicative modulations
-    to approximate true weight modulation while remaining computationally efficient.
+    This version generates two vectors that create a low-rank weight delta
+    through their outer product, implementing true weight modulation efficiently.
     
     Args:
         d_model: Model dimension (hidden size)
         d_ffn: FFN dimension (intermediate size)
         r: Low-rank dimension for factorization
-        modulation_type: Type of modulation ('additive', 'multiplicative', 'both')
+        modulation_type: Type of modulation (kept for compatibility, but now uses outer product)
     """
     
     def __init__(self, d_model: int, d_ffn: int, r: int = 16, 
@@ -35,15 +35,14 @@ class NPTAdapter(nn.Module):
         self.r = r
         self.modulation_type = modulation_type
         
-        # Low-rank projection
+        # Low-rank projection to generate two vectors
         self.A_proj = nn.Linear(d_model, r, bias=False)
         
-        # Modulation projections
-        if modulation_type in ['additive', 'both']:
-            self.B_add = nn.Linear(r, d_ffn, bias=False)
+        # Generate d_model vector from low-rank representation
+        self.B_model = nn.Linear(r, d_model, bias=False)
         
-        if modulation_type in ['multiplicative', 'both']:
-            self.B_mult = nn.Linear(r, d_ffn, bias=False)
+        # Generate d_ffn vector from low-rank representation  
+        self.B_ffn = nn.Linear(r, d_ffn, bias=False)
         
         # Initialize weights
         self._init_weights()
@@ -53,13 +52,9 @@ class NPTAdapter(nn.Module):
         # Use smaller initialization for stability
         nn.init.normal_(self.A_proj.weight, mean=0.0, std=0.02)
         
-        if hasattr(self, 'B_add'):
-            # Initialize to near-zero for minimal initial interference
-            nn.init.normal_(self.B_add.weight, mean=0.0, std=0.001)
-        
-        if hasattr(self, 'B_mult'):
-            # Initialize to zero for no initial multiplicative effect
-            nn.init.zeros_(self.B_mult.weight)
+        # Initialize vectors to near-zero for minimal initial weight delta
+        nn.init.normal_(self.B_model.weight, mean=0.0, std=0.001)
+        nn.init.normal_(self.B_ffn.weight, mean=0.0, std=0.001)
     
     def forward(self, attn_output: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -70,8 +65,9 @@ class NPTAdapter(nn.Module):
             
         Returns:
             Dictionary containing:
-                - delta_add: Additive modulation (if enabled)
-                - delta_mult: Multiplicative modulation (if enabled)
+                - vector_model: d_model dimensional vector
+                - vector_ffn: d_ffn dimensional vector
+                - delta_weight: Outer product weight delta (optional, computed on demand)
                 - reg_norm: Regularization norm
                 - low_rank_rep: Low-rank representation for permanent updates
         """
@@ -80,31 +76,25 @@ class NPTAdapter(nn.Module):
             attn_output = attn_output.to(self.A_proj.weight.dtype)
         
         # Low-rank projection
-        low_rank_rep = self.A_proj(attn_output)
+        low_rank_rep = self.A_proj(attn_output)  # (batch, seq_len, r)
         
-        outputs = {'low_rank_rep': low_rank_rep}
-        reg_terms = []
+        # Generate two vectors
+        vector_model = self.B_model(low_rank_rep)  # (batch, seq_len, d_model)
+        vector_ffn = self.B_ffn(low_rank_rep)     # (batch, seq_len, d_ffn)
         
-        # Generate additive modulation
-        if hasattr(self, 'B_add'):
-            delta_add = self.B_add(low_rank_rep)
-            outputs['delta_add'] = delta_add
-            reg_terms.append(torch.mean(torch.sum(delta_add ** 2, dim=-1)))
+        outputs = {
+            'low_rank_rep': low_rank_rep,
+            'vector_model': vector_model,
+            'vector_ffn': vector_ffn
+        }
         
-        # Generate multiplicative modulation (bounded)
-        if hasattr(self, 'B_mult'):
-            delta_mult_raw = self.B_mult(low_rank_rep)
-            # Use sigmoid-based modulation to avoid zeros
-            # Maps to [0.5, 1.5] instead of [0, 2] to avoid extreme modulation
-            delta_mult = 0.5 * torch.sigmoid(delta_mult_raw) + 0.5
-            outputs['delta_mult'] = delta_mult
-            reg_terms.append(torch.mean(torch.sum(delta_mult_raw ** 2, dim=-1)))
+        # Compute regularization based on the Frobenius norm of the implied weight delta
+        # ||delta_W||_F^2 = ||vector_ffn||^2 * ||vector_model||^2
+        norm_model = torch.sum(vector_model ** 2, dim=-1)  # (batch, seq_len)
+        norm_ffn = torch.sum(vector_ffn ** 2, dim=-1)      # (batch, seq_len)
+        reg_norm = torch.mean(norm_model * norm_ffn)
         
-        # Compute regularization norm
-        if reg_terms:
-            outputs['reg_norm'] = torch.stack(reg_terms).mean()
-        else:
-            outputs['reg_norm'] = torch.tensor(0.0, device=attn_output.device, dtype=attn_output.dtype)
+        outputs['reg_norm'] = reg_norm
         
         return outputs
 
@@ -240,31 +230,35 @@ class NPTLayer(nn.Module):
         # Use original input for MLP computation (not attention output)
         mlp_input = self.post_attention_layernorm(original_input)
         
-        # Use the actual layer's forward method to handle quantized models properly
+        # Get the vectors from modulation
+        vector_model = modulation['vector_model']  # (batch, seq_len, d_model)
+        vector_ffn = modulation['vector_ffn']      # (batch, seq_len, d_ffn)
+        
+        # Ensure vectors match mlp_input dtype
+        if vector_model.dtype != mlp_input.dtype:
+            vector_model = vector_model.to(mlp_input.dtype)
+        if vector_ffn.dtype != mlp_input.dtype:
+            vector_ffn = vector_ffn.to(mlp_input.dtype)
+        
+        # Apply weight modulation through efficient computation
+        # Instead of computing the full outer product and then multiplying with input,
+        # we use the fact that (v_ffn ⊗ v_model) @ mlp_input = v_ffn * (v_model @ mlp_input)
+        # This is much more efficient: O(d_model + d_ffn) instead of O(d_model * d_ffn)
+        
+        # Compute the dot product between vector_model and mlp_input for each position
+        # mlp_input: (batch, seq_len, d_model), vector_model: (batch, seq_len, d_model)
+        dot_product = torch.sum(mlp_input * vector_model, dim=-1, keepdim=True)  # (batch, seq_len, 1)
+        
+        # Scale the ffn vector by the dot product to get the modulation effect
+        # This is equivalent to: delta_W @ mlp_input where delta_W = vector_ffn ⊗ vector_model
+        weight_modulation = vector_ffn * dot_product  # (batch, seq_len, d_ffn)
+        
+        # Apply modulation with a small scaling factor for stability
         gate_output = self.mlp.gate_proj(mlp_input)
-        up_output = self.mlp.up_proj(mlp_input)
-        
-        # Apply modulation (efficient approximation of weight modulation)
-        modulated_gate = gate_output
-        
-        if 'delta_mult' in modulation:
-            # Ensure modulation matches gate_output dtype
-            delta_mult = modulation['delta_mult']
-            if delta_mult.dtype != gate_output.dtype:
-                delta_mult = delta_mult.to(gate_output.dtype)
-            # Multiplicative modulation: delta_mult is already in [0.5, 1.5]
-            modulated_gate = gate_output * delta_mult
-        
-        if 'delta_add' in modulation:
-            # Ensure modulation matches gate_output dtype
-            delta_add = modulation['delta_add']
-            if delta_add.dtype != gate_output.dtype:
-                delta_add = delta_add.to(gate_output.dtype)
-            # Additive modulation with scaling for stability
-            # Scale down the additive effect initially
-            modulated_gate = modulated_gate + 0.1 * delta_add
+        modulated_gate = gate_output + 0.1 * weight_modulation
         
         # Continue MLP computation
+        up_output = self.mlp.up_proj(mlp_input)
         intermediate = F.silu(modulated_gate) * up_output
         mlp_output = self.mlp.down_proj(intermediate)
         
@@ -338,46 +332,32 @@ class NPTLayer(nn.Module):
             
             modulation = outputs['modulation']
             
-            # Select the target token's modulation
-            if 'delta_add' in modulation:
-                # For additive modulation, we can approximate weight update
-                selected_delta = modulation['delta_add'][:, token_idx]  # (batch, d_ffn)
-                
-                # Compute approximate weight update
-                # This approximates: W_new = W_old + alpha * delta_W
-                # where delta_W would make the activation change by selected_delta
-                
-                # Get the input that would have been fed to gate_proj
-                mlp_input = self.post_attention_layernorm(context_tokens[:, token_idx])
-                
-                # Compute pseudo-inverse to get weight update
-                # delta_W ≈ selected_delta @ mlp_input.T / ||mlp_input||^2
-                mlp_input_norm = torch.norm(mlp_input, dim=-1, keepdim=True) + 1e-6
-                normalized_input = mlp_input / mlp_input_norm
-                
-                # Outer product to get weight-shaped update
-                # selected_delta is (batch, d_ffn), take mean over batch
-                # normalized_input is (batch, d_model), take mean over batch
-                delta_mean = selected_delta.mean(0)  # (d_ffn,)
-                input_mean = normalized_input.mean(0)  # (d_model,)
-                
-                # Compute outer product: (d_ffn, d_model)
-                weight_update = torch.outer(delta_mean, input_mean)
-                
-                # Apply update with scaling
-                update_alpha = alpha if alpha is not None else self.consolidation_alpha
-                self.mlp.gate_proj.weight.data += update_alpha * weight_update
-                
-                self.weights_updated = True
-                
-                return {
-                    'weight_update_norm': torch.norm(weight_update).item(),
-                    'alpha_used': update_alpha,
-                    'token_idx': token_idx
-                }
+            # Select the target token's modulation vectors
+            vector_model = modulation['vector_model'][:, token_idx]  # (batch, d_model)
+            vector_ffn = modulation['vector_ffn'][:, token_idx]      # (batch, d_ffn)
             
-            else:
-                raise NotImplementedError("Permanent updates require additive modulation")
+            # Take mean over batch dimension
+            vector_model_mean = vector_model.mean(0)  # (d_model,)
+            vector_ffn_mean = vector_ffn.mean(0)      # (d_ffn,)
+            
+            # Compute the outer product to get the weight delta
+            # delta_W = vector_ffn ⊗ vector_model
+            # Shape: (d_ffn, d_model) which matches gate_proj.weight shape
+            weight_update = torch.outer(vector_ffn_mean, vector_model_mean)
+            
+            # Apply update with scaling
+            update_alpha = alpha if alpha is not None else self.consolidation_alpha
+            self.mlp.gate_proj.weight.data += update_alpha * weight_update
+            
+            self.weights_updated = True
+            
+            return {
+                'weight_update_norm': torch.norm(weight_update).item(),
+                'alpha_used': update_alpha,
+                'token_idx': token_idx,
+                'vector_model_norm': torch.norm(vector_model_mean).item(),
+                'vector_ffn_norm': torch.norm(vector_ffn_mean).item()
+            }
 
 
 def convert_llama_to_npt(model, adapter_config: dict):

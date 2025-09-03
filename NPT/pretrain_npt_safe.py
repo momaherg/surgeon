@@ -144,7 +144,7 @@ class SafeEquivalenceTrainer:
             'd_model': config.hidden_size,
             'd_ffn': config.intermediate_size,
             'compute_dtype': adapter_dtype,
-            'modulation_type': 'additive' if self.args.safe_mode else 'both'
+            'modulation_type': 'outer_product'  # Now always uses outer product approach
         }
         self.student_model = convert_llama_to_npt(self.student_model, adapter_config)
         
