@@ -25,15 +25,22 @@ class NPTAdapter(nn.Module):
         d_ffn: FFN dimension (intermediate size)
         r: Low-rank dimension for factorization
         modulation_type: Type of modulation (kept for compatibility, but now uses outer product)
+        init_strategy: Weight initialization strategy ('zero', 'adaptive', 'lora', 'xavier')
+                      Default: 'adaptive' (recommended)
+        init_scale: Scaling factor for initialization (default: 1.0)
     """
     
     def __init__(self, d_model: int, d_ffn: int, r: int = 16, 
-                 modulation_type: str = 'both'):
+                 modulation_type: str = 'both',
+                 init_strategy: str = 'adaptive',
+                 init_scale: float = 1.0):
         super().__init__()
         self.d_model = d_model
         self.d_ffn = d_ffn
         self.r = r
         self.modulation_type = modulation_type
+        self.init_strategy = init_strategy
+        self.init_scale = init_scale
         
         # Low-rank projection to generate two vectors
         self.A_proj = nn.Linear(d_model, r, bias=False)
@@ -48,13 +55,61 @@ class NPTAdapter(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize for minimal initial modulation."""
-        # Use smaller initialization for stability
-        nn.init.normal_(self.A_proj.weight, mean=0.0, std=0.02)
-        
-        # Initialize vectors to near-zero for minimal initial weight delta
-        nn.init.normal_(self.B_model.weight, mean=0.0, std=0.001)
-        nn.init.normal_(self.B_ffn.weight, mean=0.0, std=0.001)
+        """Initialize weights based on selected strategy."""
+        if self.init_strategy == 'zero':
+            # Original near-zero initialization (very restrictive)
+            nn.init.normal_(self.A_proj.weight, mean=0.0, std=0.02 * self.init_scale)
+            nn.init.normal_(self.B_model.weight, mean=0.0, std=0.001 * self.init_scale)
+            nn.init.normal_(self.B_ffn.weight, mean=0.0, std=0.001 * self.init_scale)
+            
+        elif self.init_strategy == 'adaptive':
+            # Adaptive initialization based on dimensions (recommended default)
+            # This maintains proper variance through the network
+            std_a = math.sqrt(2.0 / (self.d_model + self.r))
+            nn.init.normal_(self.A_proj.weight, mean=0.0, std=std_a)
+            
+            std_b_model = math.sqrt(2.0 / (self.r + self.d_model))
+            nn.init.normal_(self.B_model.weight, mean=0.0, std=std_b_model)
+            
+            std_b_ffn = math.sqrt(2.0 / (self.r + self.d_ffn))
+            nn.init.normal_(self.B_ffn.weight, mean=0.0, std=std_b_ffn)
+            
+            # Apply scaling factor
+            self.A_proj.weight.data *= self.init_scale
+            self.B_model.weight.data *= self.init_scale * 0.5
+            self.B_ffn.weight.data *= self.init_scale * 0.5
+            
+        elif self.init_strategy == 'lora':
+            # LoRA-style initialization: A is normal, B starts at zero
+            nn.init.normal_(self.A_proj.weight, mean=0.0, std=1.0)
+            nn.init.zeros_(self.B_model.weight)
+            nn.init.zeros_(self.B_ffn.weight)
+            
+            # Scale A based on rank
+            self.A_proj.weight.data *= self.init_scale / self.r
+            
+        elif self.init_strategy == 'xavier':
+            # Xavier/Glorot initialization
+            nn.init.xavier_uniform_(self.A_proj.weight)
+            nn.init.xavier_uniform_(self.B_model.weight)
+            nn.init.xavier_uniform_(self.B_ffn.weight)
+            
+            # Scale down to start with controlled effect
+            self.A_proj.weight.data *= self.init_scale
+            self.B_model.weight.data *= self.init_scale * 0.1
+            self.B_ffn.weight.data *= self.init_scale * 0.1
+            
+        else:
+            # Default to adaptive if unknown strategy
+            std_a = math.sqrt(2.0 / (self.d_model + self.r))
+            nn.init.normal_(self.A_proj.weight, mean=0.0, std=std_a)
+            std_b_model = math.sqrt(2.0 / (self.r + self.d_model))
+            nn.init.normal_(self.B_model.weight, mean=0.0, std=std_b_model)
+            std_b_ffn = math.sqrt(2.0 / (self.r + self.d_ffn))
+            nn.init.normal_(self.B_ffn.weight, mean=0.0, std=std_b_ffn)
+            self.A_proj.weight.data *= self.init_scale
+            self.B_model.weight.data *= self.init_scale * 0.5
+            self.B_ffn.weight.data *= self.init_scale * 0.5
     
     def forward(self, attn_output: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
@@ -128,7 +183,9 @@ class NPTLayer(nn.Module):
             d_model=adapter_config.get('d_model'),
             d_ffn=adapter_config.get('d_ffn'),
             r=adapter_config.get('r', 16),
-            modulation_type=adapter_config.get('modulation_type', 'both')
+            modulation_type=adapter_config.get('modulation_type', 'both'),
+            init_strategy=adapter_config.get('init_strategy', 'adaptive'),
+            init_scale=adapter_config.get('init_scale', 1.0)
         )
         
         # Move adapter to the same device as the base layer
@@ -444,14 +501,16 @@ def convert_llama_to_npt(model, adapter_config: dict):
             except:
                 compute_dtype = torch.float32
     
-    # Default configuration
+    # Default configuration with improved initialization
     default_config = {
         'd_model': config.hidden_size,
         'd_ffn': config.intermediate_size,
         'r': 16,
         'modulation_type': 'both',
         'consolidation_alpha': 0.1,
-        'compute_dtype': compute_dtype
+        'compute_dtype': compute_dtype,
+        'init_strategy': 'adaptive',  # Use adaptive initialization by default
+        'init_scale': 1.0
     }
     default_config.update(adapter_config)
     

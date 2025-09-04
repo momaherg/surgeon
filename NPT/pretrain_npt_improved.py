@@ -150,7 +150,9 @@ class ImprovedEquivalenceTrainer:
             'd_ffn': self.config.intermediate_size,
             'compute_dtype': adapter_dtype,
             'modulation_type': 'outer_product',  # Now always uses outer product approach
-            'modulation_scale': self.args.modulation_scale
+            'modulation_scale': self.args.modulation_scale,
+            'init_strategy': self.args.init_strategy,
+            'init_scale': self.args.init_scale
         }
         self.student_model = convert_llama_to_npt(self.student_model, adapter_config)
         
@@ -594,6 +596,19 @@ def parse_args():
         type=float,
         default=0.1,
         help="Scaling factor for weight modulation (default: 0.1)"
+    )
+    parser.add_argument(
+        "--init_strategy",
+        type=str,
+        default="adaptive",
+        choices=["zero", "adaptive", "lora", "xavier"],
+        help="Weight initialization strategy (default: adaptive)"
+    )
+    parser.add_argument(
+        "--init_scale",
+        type=float,
+        default=1.0,
+        help="Initialization scale factor (default: 1.0)"
     )
     
     # Loss function arguments
