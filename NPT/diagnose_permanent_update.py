@@ -17,13 +17,29 @@ def diagnose_permanent_update(checkpoint_path: str):
     print("NPT Permanent Update Diagnostics")
     print("=" * 60)
     
-    # 1. Load model
+    # 1. Load model (same as test_checkpoint.py)
     print("\n1. Loading model...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
+    except Exception as e:
+        print(f"Could not load tokenizer from checkpoint: {e}")
+        # Try to get base model name from training info
+        training_info_path = os.path.join(checkpoint_path, "training_info.pt")
+        if os.path.exists(training_info_path):
+            info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+            if 'args' in info and hasattr(info['args'], 'model_name'):
+                base_model_name = info['args'].model_name
+                print(f"Loading tokenizer from base model: {base_model_name}")
+                tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+            else:
+                raise ValueError("Could not find base model name in training info")
+        else:
+            raise ValueError("No tokenizer found and no training info available")
+    
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    try:
         model = AutoModelForCausalLM.from_pretrained(
             checkpoint_path,
             device_map="auto",
@@ -42,9 +58,14 @@ def diagnose_permanent_update(checkpoint_path: str):
     quantized_count = 0
     adapter_info = []
     
-    for i, layer in enumerate(model.model.layers):
-        if hasattr(layer, 'adapter'):
+    # Count NPT layers using type check
+    for name, module in model.named_modules():
+        if 'NPTLayer' in str(type(module)):
             npt_count += 1
+    
+    # Get detailed info for each layer
+    for i, layer in enumerate(model.model.layers):
+        if 'NPTLayer' in str(type(layer)):  # Check if it's an NPT layer
             
             # Check if quantized
             is_quantized = hasattr(layer.mlp.gate_proj, 'weight') and hasattr(layer.mlp.gate_proj.weight, 'CB')

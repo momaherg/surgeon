@@ -19,9 +19,25 @@ def test_permanent_update(checkpoint_path: str):
     print("NPT Permanent Update Test")
     print("=" * 60)
     
-    # Load model
+    # Load tokenizer (same as test_checkpoint.py)
     print("\nLoading model...")
-    tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    except Exception as e:
+        print(f"Could not load tokenizer from checkpoint: {e}")
+        # Try to get base model name from training info
+        training_info_path = os.path.join(checkpoint_path, "training_info.pt")
+        if os.path.exists(training_info_path):
+            info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+            if 'args' in info and hasattr(info['args'], 'model_name'):
+                base_model_name = info['args'].model_name
+                print(f"Loading tokenizer from base model: {base_model_name}")
+                tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+            else:
+                raise ValueError("Could not find base model name in training info")
+        else:
+            raise ValueError("No tokenizer found and no training info available")
+    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
@@ -53,11 +69,22 @@ def test_permanent_update(checkpoint_path: str):
         model.eval()
         device = next(model.parameters()).device
         
-        # Check if model has NPT layers
-        npt_count = sum(1 for layer in model.model.layers if hasattr(layer, 'adapter'))
+        # Check if model has NPT layers (same check as test_checkpoint.py)
+        npt_count = 0
+        for name, module in model.named_modules():
+            if 'NPTLayer' in str(type(module)):
+                npt_count += 1
+        
         if npt_count == 0:
             print("ERROR: No NPT layers found in model!")
+            print("Model structure:")
+            for name, module in model.named_modules():
+                if 'layers' in name and len(name.split('.')) == 3:
+                    print(f"  {name}: {type(module)}")
+                    break
             return
+        else:
+            print(f"Found {npt_count} NPT layers")
         
         # Manually update with specific alpha
         print(f"Injecting fact with alpha={alpha}...")
