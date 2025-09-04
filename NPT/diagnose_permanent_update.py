@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple
 # Import NPT modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from model.npt_layer import demonstrate_permanent_update
+from load_npt_checkpoint import load_npt_checkpoint
 
 
 class PermanentUpdateDiagnostics:
@@ -24,50 +25,8 @@ class PermanentUpdateDiagnostics:
         
     def load_model(self):
         """Load NPT model using the correct checkpoint loading logic."""
-        print(f"Loading NPT checkpoint from: {self.checkpoint_path}")
-        
-        # Load tokenizer
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_path)
-        except:
-            # Try to get base model name from training info
-            training_info_path = os.path.join(self.checkpoint_path, "training_info.pt")
-            if os.path.exists(training_info_path):
-                info = torch.load(training_info_path, map_location="cpu", weights_only=False)
-                if 'args' in info and hasattr(info['args'], 'model_name'):
-                    base_model_name = info['args'].model_name
-                    print(f"Loading tokenizer from base model: {base_model_name}")
-                    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        # Determine dtype
-        dtype = torch.float16
-        training_info_path = os.path.join(self.checkpoint_path, "training_info.pt")
-        if os.path.exists(training_info_path):
-            info = torch.load(training_info_path, map_location="cpu", weights_only=False)
-            if 'args' in info:
-                args = info['args']
-                if hasattr(args, 'use_quantization') and args.use_quantization:
-                    dtype = torch.float32
-                    print("Model was trained with quantization - using FP32")
-        
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            self.checkpoint_path,
-            device_map="auto",
-            torch_dtype=dtype,
-            trust_remote_code=True
-        )
-        model.eval()
-        
-        # Check NPT layers
-        npt_layers = sum(1 for _, module in model.named_modules() 
-                        if 'NPTLayer' in str(type(module)))
-        print(f"Model has {npt_layers} NPT layers")
-        
-        return model, tokenizer
+        # Use the proper NPT checkpoint loading function
+        return load_npt_checkpoint(self.checkpoint_path, device_map="auto")
     
     def get_weight_snapshot(self, layer_idx: int) -> torch.Tensor:
         """Get a snapshot of gate_proj weights for a specific layer."""

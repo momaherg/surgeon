@@ -11,9 +11,10 @@ import json
 from datetime import datetime
 from typing import List, Dict, Tuple
 
-# Import the permanent update function from the fixed NPT layer
+# Import NPT modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from model.npt_layer import demonstrate_permanent_update
+from load_npt_checkpoint import load_npt_checkpoint
 
 
 class InteractivePermanentUpdateTester:
@@ -31,67 +32,9 @@ class InteractivePermanentUpdateTester:
         self.device = next(self.model.parameters()).device
         
     def load_npt_checkpoint(self):
-        """Load NPT model from checkpoint."""
-        print(f"Loading NPT checkpoint from: {self.checkpoint_path}")
-        
-        # Check if checkpoint exists
-        if not os.path.exists(self.checkpoint_path):
-            raise ValueError(f"Checkpoint path does not exist: {self.checkpoint_path}")
-        
-        # Load tokenizer
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_path)
-        except Exception as e:
-            print(f"Warning: Could not load tokenizer from checkpoint: {e}")
-            # Try to get base model name from training info
-            training_info_path = os.path.join(self.checkpoint_path, "training_info.pt")
-            if os.path.exists(training_info_path):
-                info = torch.load(training_info_path, map_location="cpu", weights_only=False)
-                if 'args' in info and hasattr(info['args'], 'model_name'):
-                    base_model_name = info['args'].model_name
-                    print(f"Loading tokenizer from base model: {base_model_name}")
-                    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-                else:
-                    raise ValueError("Could not find base model name in training info")
-            else:
-                raise ValueError("No tokenizer found and no training info available")
-        
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        # Determine dtype
-        dtype = torch.float16
-        training_info_path = os.path.join(self.checkpoint_path, "training_info.pt")
-        if os.path.exists(training_info_path):
-            try:
-                info = torch.load(training_info_path, map_location="cpu", weights_only=False)
-                if 'args' in info:
-                    args = info['args']
-                    if hasattr(args, 'use_quantization') and args.use_quantization:
-                        dtype = torch.float32
-                        print("Using FP32 (model was trained with quantization)")
-                    elif hasattr(args, 'use_fp16') and args.use_fp16:
-                        dtype = torch.float16
-                        print("Using FP16")
-            except:
-                pass
-        
-        # Load model
-        print(f"Loading NPT model with dtype={dtype}...")
-        model = AutoModelForCausalLM.from_pretrained(
-            self.checkpoint_path,
-            device_map="auto",
-            torch_dtype=dtype,
-            trust_remote_code=True
-        )
-        model.eval()
-        
-        # Verify NPT layers
-        npt_layers = sum(1 for _, module in model.named_modules() 
-                        if 'NPTLayer' in str(type(module)))
-        print(f"Model has {npt_layers} NPT layers\n")
-        
-        return model, tokenizer
+        """Load NPT model from checkpoint using proper loading function."""
+        # Use the proper NPT checkpoint loading function
+        return load_npt_checkpoint(self.checkpoint_path, device_map="auto")
     
     def inject_fact(self, fact: str, alpha: float = 0.1) -> Dict:
         """Inject a fact into the model using permanent update."""
