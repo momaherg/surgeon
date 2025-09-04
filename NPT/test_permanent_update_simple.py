@@ -21,6 +21,16 @@ def test_permanent_update(checkpoint_path: str):
     
     # Load tokenizer (same as test_checkpoint.py)
     print("\nLoading model...")
+    
+    # Debug: Check what files are in checkpoint
+    print(f"Checkpoint files:")
+    if os.path.exists(checkpoint_path):
+        files = os.listdir(checkpoint_path)
+        for f in sorted(files):
+            size = os.path.getsize(os.path.join(checkpoint_path, f)) / (1024*1024)  # MB
+            print(f"  {f} ({size:.1f} MB)")
+    print()
+    
     try:
         tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
     except Exception as e:
@@ -76,13 +86,37 @@ def test_permanent_update(checkpoint_path: str):
                 npt_count += 1
         
         if npt_count == 0:
-            print("ERROR: No NPT layers found in model!")
-            print("Model structure:")
-            for name, module in model.named_modules():
-                if 'layers' in name and len(name.split('.')) == 3:
-                    print(f"  {name}: {type(module)}")
-                    break
-            return
+            print("Model loaded as standard Llama. Converting to NPT...")
+            # Convert to NPT
+            from model.npt_layer import convert_llama_to_npt
+            
+            # Load adapter config from training info if available
+            training_info_path = os.path.join(checkpoint_path, "training_info.pt")
+            adapter_config = {'r': 16, 'modulation_scale': 0.1}  # defaults
+            
+            if os.path.exists(training_info_path):
+                try:
+                    info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+                    if 'args' in info:
+                        args = info['args']
+                        adapter_config['r'] = getattr(args, 'adapter_rank', 16)
+                        adapter_config['modulation_scale'] = getattr(args, 'modulation_scale', 0.1)
+                except:
+                    pass
+            
+            model = convert_llama_to_npt(model, adapter_config)
+            
+            # Load adapter weights if they exist
+            adapter_path = os.path.join(checkpoint_path, "adapter_model.bin")
+            if os.path.exists(adapter_path):
+                print("Loading adapter weights...")
+                adapter_state = torch.load(adapter_path, map_location=device)
+                model.load_state_dict(adapter_state, strict=False)
+            
+            # Recount NPT layers
+            npt_count = sum(1 for name, module in model.named_modules() 
+                          if 'NPTLayer' in str(type(module)))
+            print(f"Converted to NPT model with {npt_count} layers")
         else:
             print(f"Found {npt_count} NPT layers")
         
