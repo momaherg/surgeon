@@ -25,7 +25,7 @@ class PermanentUpdateDiagnostics:
         
     def load_model(self):
         """Load NPT model using the correct checkpoint loading logic."""
-        # Use the proper NPT checkpoint loading function
+        # Use the proper NPT checkpoint loading function that reconstructs the architecture
         return load_npt_checkpoint(self.checkpoint_path, device_map="auto")
     
     def get_weight_snapshot(self, layer_idx: int) -> torch.Tensor:

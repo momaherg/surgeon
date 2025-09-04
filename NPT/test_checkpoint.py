@@ -5,7 +5,6 @@ import argparse
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 from utils import setup_logging
-from load_npt_checkpoint import load_npt_checkpoint
 
 
 def load_npt_model(checkpoint_path):
@@ -13,8 +12,79 @@ def load_npt_model(checkpoint_path):
     logger = setup_logging()
     logger.info(f"Loading NPT from {checkpoint_path}")
     
-    # Use the proper NPT checkpoint loading function
-    return load_npt_checkpoint(checkpoint_path, device_map="auto")
+    # Check if checkpoint exists
+    if not os.path.exists(checkpoint_path):
+        raise ValueError(f"Checkpoint path does not exist: {checkpoint_path}")
+    
+    # Load tokenizer from checkpoint
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint_path)
+    except Exception as e:
+        logger.warning(f"Could not load tokenizer from checkpoint: {e}")
+        # Try to get base model name from training info
+        training_info_path = os.path.join(checkpoint_path, "training_info.pt")
+        if os.path.exists(training_info_path):
+            try:
+                info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+                if 'args' in info and hasattr(info['args'], 'model_name'):
+                    base_model_name = info['args'].model_name
+                    logger.info(f"Loading tokenizer from base model: {base_model_name}")
+                    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+                else:
+                    raise ValueError("Could not find base model name in training info")
+            except Exception as e2:
+                raise ValueError(f"Failed to load tokenizer: {e2}")
+        else:
+            raise ValueError("No tokenizer found and no training info available")
+    
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    # Determine dtype from training info
+    model_dtype = torch.float16  # Default
+    training_info_path = os.path.join(checkpoint_path, "training_info.pt")
+    
+    if os.path.exists(training_info_path):
+        try:
+            checkpoint_info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+            if 'args' in checkpoint_info:
+                args = checkpoint_info['args']
+                use_quantization = hasattr(args, 'use_quantization') and args.use_quantization
+                model_dtype = torch.float32 if use_quantization else torch.float16
+                
+                # Log training configuration
+                logger.info("Training configuration:")
+                if hasattr(args, 'adapter_rank'):
+                    logger.info(f"  Adapter rank: {args.adapter_rank}")
+                if hasattr(args, 'modulation_scale'):
+                    logger.info(f"  Modulation scale: {args.modulation_scale}")
+                if hasattr(args, 'learning_rate'):
+                    logger.info(f"  Learning rate: {args.learning_rate}")
+        except Exception as e:
+            logger.warning(f"Could not load training info: {e}")
+    
+    # Load the NPT model directly from checkpoint (it's already converted!)
+    logger.info(f"Loading NPT model with dtype={model_dtype}...")
+    model = AutoModelForCausalLM.from_pretrained(
+        checkpoint_path,
+        device_map="auto",
+        torch_dtype=model_dtype,
+        trust_remote_code=True
+    )
+    
+    # Verify NPT conversion
+    npt_layers = 0
+    for name, module in model.named_modules():
+        if 'NPTLayer' in str(type(module)):
+            npt_layers += 1
+    
+    if npt_layers > 0:
+        logger.info(f"Verified: Model has {npt_layers} NPT layers")
+    else:
+        logger.warning("No NPT layers found - model might not be properly converted")
+    
+    model.eval()
+    return model, tokenizer
 
 
 def main():

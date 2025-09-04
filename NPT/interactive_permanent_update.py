@@ -11,7 +11,7 @@ import json
 from datetime import datetime
 from typing import List, Dict, Tuple
 
-# Import NPT modules
+# Import the permanent update function from the fixed NPT layer
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from model.npt_layer import demonstrate_permanent_update
 from load_npt_checkpoint import load_npt_checkpoint
@@ -32,8 +32,8 @@ class InteractivePermanentUpdateTester:
         self.device = next(self.model.parameters()).device
         
     def load_npt_checkpoint(self):
-        """Load NPT model from checkpoint using proper loading function."""
-        # Use the proper NPT checkpoint loading function
+        """Load NPT model from checkpoint."""
+        # Use the proper NPT checkpoint loading function that reconstructs the architecture
         return load_npt_checkpoint(self.checkpoint_path, device_map="auto")
     
     def inject_fact(self, fact: str, alpha: float = 0.1) -> Dict:
