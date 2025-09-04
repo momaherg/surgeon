@@ -193,40 +193,24 @@ class NPTLayer(nn.Module):
         # Store original input for final residual
         original_input = hidden_states
         
-        # Prepare attention mask for SDPA
+        # Prepare attention mask for SDPA: combine padding and causal masks into 4D bool mask
         prepared_attention_mask = None
         if attention_mask is not None:
-            # Determine target dtype for attention mask
-            # It should match the dtype of the hidden states for compatibility
-            target_dtype = hidden_states.dtype
-            
             if attention_mask.dim() == 2:
                 # attention_mask: (batch, seq_len) with 1 for tokens, 0 for padding
                 batch_size_am, seq_len_am = attention_mask.shape
                 device_am = attention_mask.device
-                
-                # Create float mask: 0.0 for attend, -inf for mask
-                # First handle padding mask
-                float_mask = torch.zeros(batch_size_am, 1, 1, seq_len_am, dtype=target_dtype, device=device_am)
-                float_mask.masked_fill_(attention_mask.unsqueeze(1).unsqueeze(2) == 0, float('-inf'))
-                
-                # Add causal mask
-                causal_mask = torch.triu(
-                    torch.full((seq_len_am, seq_len_am), float('-inf'), dtype=target_dtype, device=device_am),
-                    diagonal=1
-                )
+                # Key padding mask: True where we should mask (pad positions)
+                key_padding_mask = (attention_mask == 0).view(batch_size_am, 1, 1, seq_len_am)
+                # Causal mask: True above diagonal (future positions are masked)
+                causal_mask = torch.ones(seq_len_am, seq_len_am, dtype=torch.bool, device=device_am).triu(1)
                 causal_mask = causal_mask.view(1, 1, seq_len_am, seq_len_am)
-                
-                # Combine masks (take minimum to apply both)
-                prepared_attention_mask = float_mask + causal_mask
-                
+                prepared_attention_mask = key_padding_mask | causal_mask
             elif attention_mask.dim() == 3:
                 # (batch, q_len, k_len) -> (batch, 1, q_len, k_len)
-                prepared_attention_mask = attention_mask.unsqueeze(1).to(dtype=target_dtype)
-                
+                prepared_attention_mask = attention_mask.unsqueeze(1).to(dtype=torch.bool)
             elif attention_mask.dim() == 4:
-                # Already 4D, just ensure correct dtype
-                prepared_attention_mask = attention_mask.to(dtype=target_dtype)
+                prepared_attention_mask = attention_mask.to(dtype=torch.bool)
         else:
             # Let SDPA use its internal causal masking if no mask provided
             prepared_attention_mask = None
