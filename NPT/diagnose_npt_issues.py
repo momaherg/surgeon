@@ -216,9 +216,14 @@ def diagnose_training_artifacts(checkpoint_path):
     # Load training info if available
     training_info_path = os.path.join(checkpoint_path, "training_info.pt")
     if os.path.exists(training_info_path):
-        training_info = torch.load(training_info_path, map_location="cpu")
+        try:
+            # Try with weights_only=False for compatibility with saved argparse objects
+            training_info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            print(f"  Warning: Could not load training info: {e}")
+            training_info = None
         
-        if 'args' in training_info:
+        if training_info and 'args' in training_info:
             args = training_info['args']
             print(f"Training configuration:")
             print(f"  Model: {getattr(args, 'model_name', 'Unknown')}")
