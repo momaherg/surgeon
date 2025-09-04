@@ -106,6 +106,9 @@ def load_npt_checkpoint(checkpoint_path, device_map="auto"):
     logger.info("Converting to NPT architecture...")
     model = convert_llama_to_npt(base_model, adapter_config)
     
+    # Ensure model is in eval mode before loading weights
+    model.eval()
+    
     # Step 3: Load the saved NPT state dict
     logger.info("Loading NPT adapter weights...")
     
@@ -155,5 +158,12 @@ def load_npt_checkpoint(checkpoint_path, device_map="auto"):
     if npt_layers == 0:
         raise ValueError("NPT conversion failed - no NPT layers found")
     
+    # Ensure model is in eval mode for inference
     model.eval()
+    
+    # Double-check all NPT layers are in eval mode
+    for module in model.modules():
+        if 'NPTLayer' in str(type(module)):
+            module.eval()
+    
     return model, tokenizer

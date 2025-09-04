@@ -295,33 +295,44 @@ class NPTLayer(nn.Module):
             }
         
         # Standard return format
-        # During training, we include reg_norm for loss computation
-        # During generation, we need to match standard transformer output format
+        # During generation, we need to match standard transformer output format exactly
         
-        if self.training:
+        # Check if we're in generation mode by looking at use_cache
+        # Generation typically uses cache, training typically doesn't
+        if use_cache or not self.training:
+            # Generation/inference mode: match standard transformer layer output
+            # Handle the simple case first
+            if not use_cache and not output_attentions:
+                # Just return hidden states as a tensor, not tuple
+                return hidden_states
+            
+            # Build tuple for more complex cases
+            outputs = (hidden_states,)
+            
+            # Add cache if requested
+            if use_cache:
+                # attn_outputs[1] should be the present_key_value
+                outputs += (attn_outputs[1],)
+            
+            # Add attention weights if requested
+            if output_attentions:
+                # Find attention weights in attn_outputs
+                # Typically: (hidden_states, present_key_value, attention_weights)
+                # or: (hidden_states, attention_weights) if no cache
+                if use_cache and len(attn_outputs) > 2:
+                    outputs += (attn_outputs[2],)
+                elif not use_cache and len(attn_outputs) > 1:
+                    outputs += (attn_outputs[1],)
+            
+            return outputs
+        else:
             # Training mode: include regularization norm for loss computation
             outputs = (hidden_states, modulation['reg_norm'])
             if output_attentions:
                 outputs += (attn_outputs[1],)
             if use_cache:
                 outputs += (attn_outputs[2:],) if output_attentions else (attn_outputs[1],)
-        else:
-            # Inference/generation mode: match standard transformer layer output
-            # Standard Llama returns just hidden_states when use_cache=False and output_attentions=False
-            if not use_cache and not output_attentions:
-                return hidden_states
-            
-            outputs = (hidden_states,)
-            if use_cache:
-                outputs += (attn_outputs[1],)
-            if output_attentions:
-                # Get attention weights (last element of attn_outputs that's not cache)
-                if len(attn_outputs) > 2:
-                    outputs += (attn_outputs[2],)
-                elif len(attn_outputs) > 1 and not use_cache:
-                    outputs += (attn_outputs[1],)
-        
-        return outputs
+            return outputs
     
     def consolidate_weights(
         self,

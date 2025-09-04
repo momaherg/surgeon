@@ -37,6 +37,10 @@ def diagnose_npt_save_load():
     }
     npt_model = convert_llama_to_npt(base_model, adapter_config)
     
+    # Ensure model is in eval mode
+    npt_model.eval()
+    logger.info(f"NPT model training mode: {npt_model.training}")
+    
     # 2. Check what parameters are in the NPT model
     logger.info("\n=== NPT Model Parameters ===")
     adapter_params = []
@@ -124,6 +128,12 @@ def diagnose_npt_save_load():
             loaded_adapter_params.append(name)
     
     logger.info(f"Loaded adapter parameters: {len(loaded_adapter_params)}")
+    logger.info(f"Loaded model training mode: {loaded_model.training}")
+    
+    # Ensure loaded model is in eval mode
+    if loaded_model.training:
+        logger.warning("Loaded model was in training mode, setting to eval mode")
+        loaded_model.eval()
     
     # 8. Compare adapter weights
     logger.info("\n=== Comparing Adapter Weights ===")
