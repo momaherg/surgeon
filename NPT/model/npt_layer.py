@@ -325,7 +325,7 @@ class NPTLayer(nn.Module):
     
     def consolidate_weights(
         self,
-        context_tokens: torch.Tensor,
+        hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
@@ -338,7 +338,7 @@ class NPTLayer(nn.Module):
         This implements the Permanent Update Mode from the proposal.
         
         Args:
-            context_tokens: Input tokens containing fact to memorize
+            hidden_states: Hidden states input to this layer
             attention_mask: Attention mask for the tokens
             position_ids: Position IDs for the tokens
             position_embeddings: Position embeddings for the tokens
@@ -364,7 +364,7 @@ class NPTLayer(nn.Module):
         with torch.no_grad():
             # Get modulation for the context
             outputs = self.forward(
-                context_tokens,
+                hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 position_embeddings=position_embeddings,
@@ -489,15 +489,57 @@ def demonstrate_permanent_update(model, tokenizer, fact: str):
     """
     # Tokenize the fact
     inputs = tokenizer(fact, return_tensors="pt")
+    input_ids = inputs.input_ids
+    attention_mask = inputs.attention_mask
     
-    # Perform permanent update on each NPT layer
+    # Move to same device as model
+    device = next(model.parameters()).device
+    input_ids = input_ids.to(device)
+    if attention_mask is not None:
+        attention_mask = attention_mask.to(device)
+    
+    # Start with embeddings
+    hidden_states = model.model.embed_tokens(input_ids)
+    
+    # Create position IDs
+    batch_size, seq_length = input_ids.shape
+    position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+    position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+    
+    # Get position embeddings if the model uses them
+    position_embeddings = None
+    if hasattr(model.model, 'rotary_emb'):
+        cos, sin = model.model.rotary_emb(hidden_states, position_ids)
+        position_embeddings = (cos, sin)
+    
+    # Process through each layer and perform permanent updates
     for i, layer in enumerate(model.model.layers):
         if hasattr(layer, 'consolidate_weights'):
+            # Consolidate weights for this layer using current hidden states
             stats = layer.consolidate_weights(
-                inputs.input_ids,
-                attention_mask=inputs.attention_mask,
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
                 token_idx=-1  # Use last token
             )
             print(f"Layer {i}: Updated weights with norm {stats['weight_update_norm']:.4f}")
+            
+            # Forward pass through this layer to get hidden states for next layer
+            # Don't use return_modulation=True here, just get the next hidden states
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings,
+                use_cache=False,
+                output_attentions=False
+            )
+            
+            # Extract hidden states from output
+            if isinstance(layer_outputs, tuple):
+                hidden_states = layer_outputs[0]
+            else:
+                hidden_states = layer_outputs
     
     return model
