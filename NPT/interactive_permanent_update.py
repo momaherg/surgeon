@@ -38,7 +38,7 @@ class InteractivePermanentUpdateTester:
         if not os.path.exists(self.checkpoint_path):
             raise ValueError(f"Checkpoint path does not exist: {self.checkpoint_path}")
         
-        # Load tokenizer (same as test_checkpoint.py)
+        # Load tokenizer
         try:
             tokenizer = AutoTokenizer.from_pretrained(self.checkpoint_path)
         except Exception as e:
