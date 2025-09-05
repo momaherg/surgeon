@@ -104,8 +104,21 @@ class NPTInteractiveTester:
             # Load training info if available
             training_info_path = os.path.join(self.checkpoint_path, "training_info.pt")
             if os.path.exists(training_info_path):
-                training_info = torch.load(training_info_path, map_location="cpu")
-                adapter_config = training_info.get('adapter_config', {})
+                # Note: training_info.pt contains argparse.Namespace which requires weights_only=False
+                # This is safe as we're loading from our own training checkpoints
+                try:
+                    training_info = torch.load(training_info_path, map_location="cpu", weights_only=False)
+                    adapter_config = training_info.get('adapter_config', {})
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Failed to load training_info.pt: {e}[/yellow]")
+                    console.print("[yellow]Using default adapter config[/yellow]")
+                    adapter_config = {
+                        'r': 16,
+                        'd_model': config.hidden_size,
+                        'd_ffn': config.intermediate_size,
+                        'init_strategy': 'adaptive',
+                        'init_scale': 1.0
+                    }
             else:
                 # Default adapter config
                 adapter_config = {
@@ -123,7 +136,12 @@ class NPTInteractiveTester:
             adapter_path = os.path.join(self.checkpoint_path, "adapter_model.bin")
             if os.path.exists(adapter_path):
                 console.print("[cyan]Loading adapter weights...[/cyan]")
-                adapter_weights = torch.load(adapter_path, map_location=self.device)
+                try:
+                    # Adapter weights should be safe to load with weights_only=True
+                    adapter_weights = torch.load(adapter_path, map_location=self.device, weights_only=True)
+                except Exception:
+                    # Fallback to weights_only=False if needed
+                    adapter_weights = torch.load(adapter_path, map_location=self.device, weights_only=False)
                 model.load_state_dict(adapter_weights, strict=False)
         
         # Move model to device if not already
