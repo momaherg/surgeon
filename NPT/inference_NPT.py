@@ -85,7 +85,9 @@ def load_npt_checkpoint(
     adapter_config = None
     if os.path.exists(training_info_path):
         logger.info("Loading training info...")
-        training_info = torch.load(training_info_path, map_location="cpu")
+        # Use weights_only=False to handle argparse.Namespace in checkpoint
+        # This is safe since we're loading our own training checkpoints
+        training_info = torch.load(training_info_path, map_location="cpu", weights_only=False)
         adapter_config = training_info.get('adapter_config', None)
         args = training_info.get('args', None)
         
