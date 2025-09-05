@@ -178,9 +178,15 @@ def generate_completion(
     # Tokenize input
     inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
     
-    # Move to device
-    if device != "cuda":
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+    # Ensure inputs are on the same device as the model
+    # When the model is sharded across GPUs (device_map="auto"), placing inputs on CUDA works
+    if device == "cuda":
+        target_device = torch.device("cuda")
+    elif device == "mps":
+        target_device = torch.device("mps")
+    else:
+        target_device = torch.device("cpu")
+    inputs = {k: v.to(target_device) for k, v in inputs.items()}
     
     # Set up generation config
     generation_config = GenerationConfig(
