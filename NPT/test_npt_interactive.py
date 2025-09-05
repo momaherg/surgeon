@@ -196,22 +196,21 @@ class NPTInteractiveTester:
         # Track modulation effects
         modulation_stats = []
         
-        # Hook to capture modulation
+        # Hook to capture modulation from adapter
         def capture_modulation(module, input, output):
-            if isinstance(output, dict) and 'modulation' in output:
-                mod = output['modulation']
+            if isinstance(output, dict) and 'vector_model' in output:
                 stats = {
-                    'vector_model_norm': torch.norm(mod['vector_model']).item(),
-                    'vector_ffn_norm': torch.norm(mod['vector_ffn']).item(),
-                    'reg_norm': mod['reg_norm'].item()
+                    'vector_model_norm': torch.norm(output['vector_model']).item(),
+                    'vector_ffn_norm': torch.norm(output['vector_ffn']).item(),
+                    'reg_norm': output.get('reg_norm', 0.0).item()
                 }
                 modulation_stats.append(stats)
         
-        # Register hooks
+        # Register hooks on adapter modules
         hooks = []
         for layer in self.model.model.layers:
-            if isinstance(layer, NPTLayer):
-                hook = layer.register_forward_hook(capture_modulation)
+            if isinstance(layer, NPTLayer) and hasattr(layer, 'adapter'):
+                hook = layer.adapter.register_forward_hook(capture_modulation)
                 hooks.append(hook)
         
         # Forward pass
@@ -262,18 +261,17 @@ class NPTInteractiveTester:
         
         if show_modulation:
             def track_modulation(module, input, output):
-                if isinstance(output, dict) and 'modulation' in output:
-                    mod = output['modulation']
+                if isinstance(output, dict) and 'vector_model' in output:
                     modulation_data.append({
-                        'vector_model': mod['vector_model'].cpu().numpy(),
-                        'vector_ffn': mod['vector_ffn'].cpu().numpy()
+                        'vector_model': output['vector_model'].cpu().numpy(),
+                        'vector_ffn': output['vector_ffn'].cpu().numpy()
                     })
             
-            # Add hooks
+            # Add hooks on adapter modules
             hooks = []
             for layer in self.model.model.layers[:3]:  # Track first 3 layers only
-                if isinstance(layer, NPTLayer):
-                    hook = layer.register_forward_hook(track_modulation)
+                if isinstance(layer, NPTLayer) and hasattr(layer, 'adapter'):
+                    hook = layer.adapter.register_forward_hook(track_modulation)
                     hooks.append(hook)
         
         # Generate
