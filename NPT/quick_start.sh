@@ -120,7 +120,8 @@ python pretrain_npt_improved.py \
     --mse_weight 0.5 \
     --cosine_weight 0.5 \
     --warmup_steps 1000 \
-    --keep_only_last_checkpoint
+    --keep_only_last_checkpoint \
+    --prediction_steps 150
 
 ### 1. **Conservative (Most Stable)**
 Best for initial experimentation and debugging.

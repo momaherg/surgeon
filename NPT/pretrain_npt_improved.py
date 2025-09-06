@@ -83,6 +83,18 @@ class ImprovedEquivalenceTrainer:
         self.max_nan_count = 10  # Stop after this many NaN occurrences
         self.global_step = 0
         self.last_checkpoint_path = None  # Track the last checkpoint for deletion
+        
+        # Sample prompts for monitoring progress
+        if args.sample_prompts:
+            self.sample_prompts = args.sample_prompts
+        else:
+            self.sample_prompts = [
+                "The capital of France is",
+                "2 + 2 equals",
+                "The largest planet in our solar system is",
+                "Machine learning is",
+                "In order to succeed, you must"
+            ]
     
     def setup_models(self):
         """Load and setup teacher and student models with enhanced stability."""
@@ -490,6 +502,12 @@ class ImprovedEquivalenceTrainer:
                         'reg': f"{metrics['loss/regularization']:.4f}"
                     })
                 
+                # Generate sample predictions
+                if (self.args.prediction_steps > 0 and 
+                    self.global_step % self.args.prediction_steps == 0 and 
+                    self.global_step > 0):
+                    self.generate_sample_predictions()
+                
                 # Save checkpoint
                 if self.global_step % self.args.save_steps == 0 and self.global_step > 0:
                     self.save_checkpoint(self.global_step)
@@ -579,6 +597,62 @@ class ImprovedEquivalenceTrainer:
         # Update last checkpoint path for regular checkpoints
         if not is_best and not is_final:
             self.last_checkpoint_path = save_path
+    
+    def generate_sample_predictions(self):
+        """Generate sample predictions to monitor training progress."""
+        self.logger.info("Generating sample predictions to monitor progress...")
+        
+        # Set model to eval mode temporarily
+        self.student_model.eval()
+        
+        predictions = []
+        
+        with torch.no_grad():
+            for prompt in self.sample_prompts:
+                # Tokenize prompt
+                inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
+                input_ids = inputs.input_ids.to(self.accelerator.device)
+                attention_mask = inputs.attention_mask.to(self.accelerator.device)
+                
+                try:
+                    # Generate with small max_new_tokens for quick feedback
+                    outputs = self.student_model.generate(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=20,
+                        temperature=0.7,
+                        do_sample=True,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id
+                    )
+                    
+                    # Decode the generated text
+                    generated_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                    predictions.append(f"  Prompt: {prompt}\n  Response: {generated_text}")
+                    
+                except Exception as e:
+                    self.logger.warning(f"Failed to generate for prompt '{prompt}': {str(e)}")
+                    predictions.append(f"  Prompt: {prompt}\n  Response: [Generation failed]")
+        
+        # Log all predictions
+        self.logger.info(f"\n{'='*60}\nStep {self.global_step} - Sample Predictions:\n{'='*60}")
+        for pred in predictions:
+            self.logger.info(pred)
+        self.logger.info("="*60 + "\n")
+        
+        # Set model back to training mode
+        self.student_model.train()
+        
+        # Also log to wandb if enabled
+        if self.args.use_wandb and self.metrics_logger.use_wandb:
+            import wandb
+            wandb.log({
+                "sample_predictions": wandb.Table(
+                    columns=["step", "prompt", "response"],
+                    data=[[self.global_step, p.split("\n")[0].replace("  Prompt: ", ""), 
+                          p.split("\n")[1].replace("  Response: ", "")] for p in predictions]
+                )
+            }, step=self.global_step)
 
 
 def parse_args():
@@ -843,6 +917,19 @@ def parse_args():
         "--keep_only_last_checkpoint",
         action="store_true",
         help="Keep only the last checkpoint to save storage space"
+    )
+    parser.add_argument(
+        "--prediction_steps",
+        type=int,
+        default=150,
+        help="Generate sample predictions every N steps (0 to disable)"
+    )
+    parser.add_argument(
+        "--sample_prompts",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Custom prompts to use for monitoring predictions"
     )
     
     return parser.parse_args()
