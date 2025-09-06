@@ -30,7 +30,7 @@ from utils import (
     get_optimizer,
     get_scheduler
 )
-from improved_loss import create_improved_loss
+from combined_npt_loss import create_combined_npt_loss
 
 
 class ImprovedEquivalenceTrainer:
@@ -177,32 +177,39 @@ class ImprovedEquivalenceTrainer:
         self.logger.info(f"Trainable percentage: {100 * trainable_params / total_params:.2f}%")
     
     def setup_loss_function(self):
-        """Setup improved loss function."""
-        self.logger.info(f"Setting up {self.args.loss_type} loss function")
+        """Setup combined architecture-aware loss function."""
+        self.logger.info("Setting up combined NPT loss function with architecture awareness")
         
         training_config = {
+            # Architecture-aware parameters
+            "layer_decay": self.args.layer_decay,
+            "divergence_tolerance": self.args.divergence_tolerance,
+            "use_exponential_decay": self.args.use_exponential_decay,
+            "normalize_by_layer": self.args.normalize_by_layer,
+            # Loss combination
             "mse_weight": self.args.mse_weight,
             "cosine_weight": self.args.cosine_weight,
+            # Regularization
             "regularization_lambda": self.args.regularization_lambda,
             "gradient_penalty_lambda": self.args.gradient_penalty_lambda,
-            "distill_temperature": self.args.distill_temperature,
-            "use_adaptive_weights": self.args.use_adaptive_weights,
             "use_gradient_penalty": self.args.use_gradient_penalty,
+            # Curriculum learning
+            "distill_temperature": self.args.distill_temperature,
             "warmup_steps": self.args.warmup_steps,
-            "focal_gamma": self.args.focal_gamma,
-            "smooth_beta": self.args.smooth_beta
+            # Adaptive refinement
+            "use_adaptive_refinement": self.args.use_adaptive_refinement,
+            "adaptive_init_value": self.args.adaptive_init_value
         }
         
-        self.loss_fn = create_improved_loss(
+        self.loss_fn = create_combined_npt_loss(
             model_config=self.config,
-            training_config=training_config,
-            loss_type=self.args.loss_type
+            training_config=training_config
         )
         
-        # If using adaptive weights, they need to be optimized too
-        if hasattr(self.loss_fn, 'layer_weights') and self.loss_fn.layer_weights is not None:
+        # If using adaptive refinement, loss function has trainable parameters
+        if self.args.use_adaptive_refinement:
             self.loss_params = list(self.loss_fn.parameters())
-            self.logger.info("Loss function has trainable parameters (adaptive weights)")
+            self.logger.info("Loss function has trainable parameters (adaptive layer weight refinement)")
         else:
             self.loss_params = []
     
@@ -306,6 +313,8 @@ class ImprovedEquivalenceTrainer:
                     attention_mask=attention_mask,
                     output_hidden_states=True
                 )
+                # Note: teacher_hidden_states contains embeddings + layer outputs
+                # but does NOT include the final layer normalization
                 teacher_hidden_states = teacher_outputs.hidden_states
             
             # Student forward pass - manually go through layers for NPT
@@ -355,8 +364,8 @@ class ImprovedEquivalenceTrainer:
             # Apply final layer norm
             hidden_states = self.student_model.model.norm(hidden_states)
             
-            # Add the final normalized hidden states to match teacher's output structure
-            all_hidden_states.append(hidden_states)
+            # Note: Do NOT add final layer norm to all_hidden_states
+            # Teacher hidden states do not include the final layer norm
             
             # Use improved loss function
             loss_dict = self.loss_fn(
@@ -429,13 +438,15 @@ class ImprovedEquivalenceTrainer:
                 'loss/total': total_loss.item(),
                 'loss/alignment': loss_dict.get('alignment_loss', total_loss).item(),
                 'loss/mse': loss_dict.get('mse_loss', 0.0).item(),
+                'loss/adjusted_mse': loss_dict.get('adjusted_mse_loss', loss_dict.get('mse_loss', 0.0)).item(),
                 'loss/cosine': loss_dict.get('cosine_loss', 0.0).item(),
                 'loss/regularization': loss_dict.get('reg_loss', 0.0).item(),
                 'loss/grad_penalty': loss_dict.get('grad_penalty', 0.0).item(),
                 'training/learning_rate': self.scheduler.get_last_lr()[0],
                 'training/grad_norm': grad_norm,
                 'training/curriculum_factor': loss_dict.get('curriculum_factor', 1.0),
-                'training/temperature': loss_dict.get('temperature', 1.0)
+                'training/temperature': loss_dict.get('temperature', 1.0),
+                'training/layer_weights_std': loss_dict.get('layer_weights_std', 0.0)
             }
             
             self.global_step += 1
@@ -726,9 +737,7 @@ class ImprovedEquivalenceTrainer:
                             hidden_states = layer_outputs
                         student_hidden.append(hidden_states)
                     
-                    # Apply final layer norm to match teacher's output structure
-                    hidden_states = self.student_model.model.norm(hidden_states)
-                    student_hidden.append(hidden_states)
+                    # Note: Do NOT add final layer norm - teacher hidden states don't include it
                     
                     # Compute differences for each layer
                     for layer_idx in range(min(len(teacher_hidden), len(student_hidden))):
@@ -854,23 +863,42 @@ def parse_args():
     
     # Loss function arguments
     parser.add_argument(
-        "--loss_type",
-        type=str,
-        default="improved_npt",
-        choices=["improved_npt", "focal_mse", "smooth_l1_mse"],
-        help="Type of loss function to use"
-    )
-    parser.add_argument(
         "--mse_weight",
         type=float,
-        default=0.8,
+        default=0.7,
         help="Weight for MSE component in combined loss"
     )
     parser.add_argument(
         "--cosine_weight",
         type=float,
-        default=0.2,
+        default=0.3,
         help="Weight for cosine similarity component"
+    )
+    
+    # Architecture-aware loss parameters
+    parser.add_argument(
+        "--layer_decay",
+        type=float,
+        default=0.85,
+        help="Decay factor for layer weights (early layers weighted more)"
+    )
+    parser.add_argument(
+        "--divergence_tolerance",
+        type=float,
+        default=0.15,
+        help="Expected divergence tolerance for later layers"
+    )
+    parser.add_argument(
+        "--use_exponential_decay",
+        action="store_true",
+        default=True,
+        help="Use exponential decay for layer weights (vs linear)"
+    )
+    parser.add_argument(
+        "--normalize_by_layer",
+        action="store_true",
+        default=True,
+        help="Normalize hidden states by layer statistics before loss computation"
     )
     parser.add_argument(
         "--regularization_lambda",
@@ -891,26 +919,21 @@ def parse_args():
         help="Temperature for knowledge distillation"
     )
     parser.add_argument(
-        "--use_adaptive_weights",
+        "--use_adaptive_refinement",
         action="store_true",
-        help="Use learnable adaptive layer weights"
+        default=True,
+        help="Use learnable adaptive refinement on top of base layer weights"
+    )
+    parser.add_argument(
+        "--adaptive_init_value",
+        type=float,
+        default=1.0,
+        help="Initial value for adaptive layer weight multipliers"
     )
     parser.add_argument(
         "--use_gradient_penalty",
         action="store_true",
-        help="Use gradient penalty for smoother optimization"
-    )
-    parser.add_argument(
-        "--focal_gamma",
-        type=float,
-        default=2.0,
-        help="Gamma parameter for focal loss"
-    )
-    parser.add_argument(
-        "--smooth_beta",
-        type=float,
-        default=1.0,
-        help="Beta parameter for smooth L1 loss"
+        help="Use gradient penalty for smoother optimization (can be expensive)"
     )
     
     # Dataset arguments
