@@ -65,9 +65,19 @@ def test_alignment():
         batch_size, seq_length = inputs.input_ids.shape
         position_ids = torch.arange(seq_length, dtype=torch.long).unsqueeze(0)
         
+        # Get position embeddings if the model uses them
+        position_embeddings = None
+        if hasattr(student.model, 'rotary_emb'):
+            cos, sin = student.model.rotary_emb(hidden, position_ids)
+            position_embeddings = (cos, sin)
+        
         # Pass through layers
         for layer in student.model.layers:
-            outputs = layer(hidden, position_ids=position_ids)
+            outputs = layer(
+                hidden, 
+                position_ids=position_ids,
+                position_embeddings=position_embeddings
+            )
             if isinstance(outputs, tuple):
                 hidden = outputs[0]
             else:
