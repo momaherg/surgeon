@@ -298,9 +298,6 @@ class SafeEquivalenceTrainer:
             # Apply final layer norm
             hidden_states = self.student_model.model.norm(hidden_states)
             
-            # Note: Do NOT add final layer norm to all_hidden_states
-            # Teacher hidden states do not include the final layer norm
-            
             # Compute MSE loss with gradient clipping per layer
             mse_losses = []
             num_layers = min(len(teacher_hidden_states) - 1, len(all_hidden_states) - 1)

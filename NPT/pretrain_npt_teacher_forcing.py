@@ -1,5 +1,9 @@
 """
-NPT pretraining with improved loss functions for better convergence.
+NPT pretraining with layer-level teacher forcing to prevent error accumulation.
+
+This version ensures each NPT layer receives the same input as the corresponding 
+teacher layer during training, preventing the exponential error growth observed 
+in the original implementation.
 """
 
 import os
@@ -33,8 +37,8 @@ from utils import (
 from improved_loss import create_improved_loss
 
 
-class ImprovedEquivalenceTrainer:
-    """Trainer with improved loss functions for better convergence."""
+class TeacherForcingNPTTrainer:
+    """NPT Trainer with layer-level teacher forcing to prevent error accumulation."""
     
     def __init__(self, args):
         self.args = args
@@ -61,7 +65,7 @@ class ImprovedEquivalenceTrainer:
         self.metrics_logger = MetricsLogger(
             use_wandb=args.use_wandb,
             use_tensorboard=args.use_tensorboard,
-            project_name="npt-improved-pretraining",
+            project_name="npt-teacher-forcing",
             run_name=args.run_name,
             config=vars(args)
         )
@@ -80,9 +84,9 @@ class ImprovedEquivalenceTrainer:
         
         # Initialize tracking variables
         self.nan_count = 0
-        self.max_nan_count = 10  # Stop after this many NaN occurrences
+        self.max_nan_count = 10
         self.global_step = 0
-        self.last_checkpoint_path = None  # Track the last checkpoint for deletion
+        self.last_checkpoint_path = None
         
         # Sample prompts for monitoring progress
         if args.sample_prompts:
@@ -108,7 +112,7 @@ class ImprovedEquivalenceTrainer:
         # Load configuration
         self.config = AutoConfig.from_pretrained(self.args.model_name)
         
-        # Determine dtype - use FP32 for stability with quantized models
+        # Determine dtype
         if self.args.use_quantization:
             model_dtype = torch.float32
             self.logger.info("Using FP32 for model dtype with quantization")
@@ -144,15 +148,13 @@ class ImprovedEquivalenceTrainer:
             self.student_model.lm_head = self.teacher_model.lm_head
             self.logger.info("Sharing embeddings between teacher and student")
         
-        # Convert student model to NPT with safe configuration
+        # Convert student model to NPT
         self.logger.info("Converting model to NPT architecture...")
         
-        # Determine adapter dtype based on model dtype
+        # Determine adapter dtype
         if self.args.use_quantization:
-            # Always use FP32 for adapters with quantized models
             adapter_dtype = torch.float32
         elif self.args.use_fp16:
-            # Match FP16 if using FP16 without quantization
             adapter_dtype = torch.float16
         else:
             adapter_dtype = torch.float32
@@ -162,7 +164,7 @@ class ImprovedEquivalenceTrainer:
             'd_model': self.config.hidden_size,
             'd_ffn': self.config.intermediate_size,
             'compute_dtype': adapter_dtype,
-            'modulation_type': 'outer_product',  # Now always uses outer product approach
+            'modulation_type': 'outer_product',
             'modulation_scale': self.args.modulation_scale,
             'init_strategy': self.args.init_strategy,
             'init_scale': self.args.init_scale
@@ -281,15 +283,19 @@ class ImprovedEquivalenceTrainer:
         if self.loss_params:
             self.loss_fn = self.accelerator.prepare(self.loss_fn)
     
-    def compute_hidden_states_and_loss(self, batch):
-        """Compute hidden states and loss using improved loss function."""
+    def compute_hidden_states_and_loss_with_teacher_forcing(self, batch):
+        """
+        Compute hidden states and loss using teacher forcing at layer level.
+        
+        KEY CHANGE: Each NPT layer receives the teacher's hidden state as input,
+        not the output from the previous NPT layer. This prevents error accumulation.
+        """
         # Move batch to device
         input_ids = batch['input_ids']
         attention_mask = batch['attention_mask']
         
         # Ensure proper dtype
         if attention_mask is not None:
-            # Get dtype from model config or parameters
             if self.args.use_quantization:
                 target_dtype = torch.float32
             elif self.args.use_fp16:
@@ -299,7 +305,7 @@ class ImprovedEquivalenceTrainer:
             attention_mask = attention_mask.to(dtype=target_dtype)
         
         try:
-            # Teacher forward pass (no grad)
+            # Teacher forward pass (no grad) - get all hidden states
             with torch.no_grad():
                 teacher_outputs = self.teacher_model(
                     input_ids=input_ids,
@@ -308,13 +314,13 @@ class ImprovedEquivalenceTrainer:
                 )
                 teacher_hidden_states = teacher_outputs.hidden_states
             
-            # Student forward pass - manually go through layers for NPT
-            all_hidden_states = []
+            # Student forward pass with teacher forcing
+            all_student_hidden_states = []
             reg_norms = []
             
-            # Get embeddings
+            # Get embeddings (shared, so they should match)
             hidden_states = self.student_model.model.embed_tokens(input_ids)
-            all_hidden_states.append(hidden_states)
+            all_student_hidden_states.append(hidden_states)
             
             # Get batch size and sequence length
             batch_size, seq_length = input_ids.shape
@@ -327,15 +333,23 @@ class ImprovedEquivalenceTrainer:
             # Check if the model has rotary embeddings
             position_embeddings = None
             if hasattr(self.student_model.model, 'rotary_emb'):
-                # For newer Llama models
                 cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
                 position_embeddings = (cos, sin)
             
-            # Pass through layers
+            # Process through each layer with teacher forcing
             for i, layer in enumerate(self.student_model.model.layers):
+                # CRITICAL: Use teacher's hidden state as input, not student's output
+                # This prevents error accumulation
+                if i == 0:
+                    # First layer uses embeddings (which are shared)
+                    layer_input = hidden_states
+                else:
+                    # All other layers use teacher's output from previous layer
+                    layer_input = teacher_hidden_states[i].detach()
+                
                 # Forward through NPT layer
                 layer_outputs = layer(
-                    hidden_states,
+                    layer_input,  # Using teacher's hidden state!
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings
@@ -343,22 +357,23 @@ class ImprovedEquivalenceTrainer:
                 
                 # Handle different output formats
                 if isinstance(layer_outputs, tuple):
-                    hidden_states = layer_outputs[0]
+                    student_hidden = layer_outputs[0]
                     # Collect regularization if available
                     if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
                         reg_norms.append(layer_outputs[1])
                 else:
-                    hidden_states = layer_outputs
+                    student_hidden = layer_outputs
                 
-                all_hidden_states.append(hidden_states)
+                all_student_hidden_states.append(student_hidden)
             
-            # Apply final layer norm
-            hidden_states = self.student_model.model.norm(hidden_states)
+            # Apply final layer norm using teacher's last hidden state
+            final_teacher_hidden = teacher_hidden_states[-2].detach()  # -2 because -1 is after norm
+            final_student_hidden = self.student_model.model.norm(final_teacher_hidden)
             
             # Use improved loss function
             loss_dict = self.loss_fn(
                 teacher_hidden_states=teacher_hidden_states,
-                student_hidden_states=all_hidden_states,
+                student_hidden_states=all_student_hidden_states,
                 reg_norms=reg_norms,
                 step=self.global_step
             )
@@ -384,8 +399,8 @@ class ImprovedEquivalenceTrainer:
     def train_step(self, batch):
         """Perform a single training step with safety checks."""
         try:
-            # Compute losses
-            loss_dict = self.compute_hidden_states_and_loss(batch)
+            # Compute losses with teacher forcing
+            loss_dict = self.compute_hidden_states_and_loss_with_teacher_forcing(batch)
             total_loss = loss_dict['total_loss']
             
             # Check for NaN
@@ -446,7 +461,8 @@ class ImprovedEquivalenceTrainer:
     
     def train(self):
         """Main training loop with safety checks."""
-        self.logger.info("Starting improved equivalence pre-training...")
+        self.logger.info("Starting NPT training with layer-level teacher forcing...")
+        self.logger.info("This prevents error accumulation by using teacher hidden states as input to each layer")
         
         best_loss = float('inf')
         consecutive_errors = 0
@@ -507,7 +523,7 @@ class ImprovedEquivalenceTrainer:
                     self.global_step % self.args.prediction_steps == 0 and 
                     self.global_step > 0):
                     self.generate_sample_predictions()
-                    self.compute_hidden_state_differences()
+                    self.compute_hidden_state_differences_with_teacher_forcing()
                 
                 # Save checkpoint
                 if self.global_step % self.args.save_steps == 0 and self.global_step > 0:
@@ -655,9 +671,14 @@ class ImprovedEquivalenceTrainer:
                 )
             }, step=self.global_step)
     
-    def compute_hidden_state_differences(self, num_samples=5):
-        """Compute differences between teacher and student hidden states."""
-        self.logger.info("Computing hidden state differences...")
+    def compute_hidden_state_differences_with_teacher_forcing(self, num_samples=5):
+        """
+        Compute differences between teacher and student hidden states.
+        
+        NOTE: During evaluation, we run the student model normally (without teacher forcing)
+        to see how well it has learned to match the teacher's behavior.
+        """
+        self.logger.info("Computing hidden state differences (inference mode - no teacher forcing)...")
         
         # Set models to eval mode
         self.student_model.eval()
@@ -692,7 +713,7 @@ class ImprovedEquivalenceTrainer:
                     )
                     teacher_hidden = teacher_outputs.hidden_states
                     
-                    # Get student hidden states manually through layers
+                    # Get student hidden states (normal forward pass, no teacher forcing)
                     student_hidden = []
                     hidden_states = self.student_model.model.embed_tokens(input_ids)
                     student_hidden.append(hidden_states)
@@ -709,7 +730,7 @@ class ImprovedEquivalenceTrainer:
                         cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
                         position_embeddings = (cos, sin)
                     
-                    # Pass through layers
+                    # Pass through layers normally (no teacher forcing during evaluation)
                     for layer in self.student_model.model.layers:
                         layer_outputs = layer(
                             hidden_states,
@@ -794,7 +815,7 @@ class ImprovedEquivalenceTrainer:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="NPT Equivalence Pre-training with Improved Loss Functions"
+        description="NPT Equivalence Pre-training with Layer-Level Teacher Forcing"
     )
     
     # Model arguments
@@ -1005,7 +1026,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs/npt-improved-pretrained",
+        default="./outputs/npt-teacher-forcing",
         help="Output directory for checkpoints"
     )
     parser.add_argument(
@@ -1079,7 +1100,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Initialize trainer
-    trainer = ImprovedEquivalenceTrainer(args)
+    trainer = TeacherForcingNPTTrainer(args)
     
     # Start training
     trainer.train()
