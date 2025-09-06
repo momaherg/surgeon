@@ -7,7 +7,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 
-def analyze_hidden_states_structure(model_name="meta-llama/Llama-2-7b-hf"):
+def analyze_hidden_states_structure(model_name="meta-llama/Llama-3.1-8B"):
     """Analyze what exactly is in the hidden states from the teacher model."""
     
     print(f"Analyzing hidden states structure for {model_name}")
@@ -117,7 +117,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, default="meta-llama/Llama-2-7b-hf")
+    parser.add_argument("--model", type=str, default="meta-llama/Llama-3.1-8B")
     args = parser.parse_args()
     
     analyze_hidden_states_structure(args.model)

@@ -11,7 +11,7 @@ from model import convert_llama_to_npt
 def test_alignment():
     """Test the alignment between teacher and student hidden states."""
     
-    model_name = "meta-llama/Llama-2-7b-hf"
+    model_name = "meta-llama/Llama-3.1-8B"
     
     print("Loading models...")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
