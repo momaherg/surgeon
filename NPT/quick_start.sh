@@ -62,22 +62,141 @@ if [ "$PHASE" == "pretrain" ]; then
         echo "Running full pre-training..."
 python pretrain_npt_safe.py \
     --model_name meta-llama/Llama-3.1-8B \
-    --adapter_rank 8 \
-    --use_quantization \
-    --share_embeddings \
-    --safe_mode \
-    --streaming \
+  --use_fp16 \
+  --mixed_precision bf16 \
+  --adapter_rank 16 \
+  --modulation_scale 0.1 \
+  --regularization_lambda 0.01 \
+  --share_embeddings \
+  --batch_size 1 \
+  --gradient_accumulation_steps 32 \
+  --learning_rate 5e-5 \
+  --weight_decay 0.01 \
+  --scheduler_type cosine \
+  --warmup_steps 1000 \
+  --max_length 2048 \
+  --num_epochs 1 \
+  --max_steps 20000 \
+  --log_steps 10 \
+  --save_steps 1000 \
+  --streaming \
+  --use_wandb
+
+python pretrain_npt_safe.py \
+  --model_name "meta-llama/Llama-3.1-8B" \
+  --adapter_rank 128 \
+  --learning_rate 1e-4 \
+  --regularization_lambda 0.005 \
+  --modulation_scale 0.1 \
+  --batch_size 1 \
+  --gradient_accumulation_steps 8 \
+  --max_grad_norm 1.0 \
+  --warmup_steps 200 \
+  --share_embeddings \
+  --mixed_precision "bf16" \
+  --max_length 1024 \
+  --max_steps 10000 \
+  --streaming \
+  --use_wandb
+
+########## best
+python pretrain_npt_improved.py \
+    --model_name "meta-llama/Llama-3.1-8B" \
+    --adapter_rank 256 \
+    --regularization_lambda 0.01 \
+    --modulation_scale 1 \
     --batch_size 1 \
-    --gradient_accumulation_steps 4 \
+    --gradient_accumulation_steps 8 \
+    --max_grad_norm 1.0 \
+    --share_embeddings \
+    --mixed_precision "bf16" \
+    --max_length 512 \
+    --max_steps 10000 \
+    --streaming \
+    --use_wandb \
+    --loss_type "improved_npt" \
+    --use_adaptive_weights \
+    --use_gradient_penalty \
+    --mse_weight 0.5 \
+    --cosine_weight 0.5 \
+    --warmup_steps 1000 \
+    --keep_only_last_checkpoint
+
+### 1. **Conservative (Most Stable)**
+Best for initial experimentation and debugging.
+
+```bash
+python pretrain_npt_safe.py \
+    --model_name "meta-llama/Llama-3.2-1B" \
+    --adapter_rank 8 \
     --learning_rate 5e-5 \
-    --regularization_lambda 0.001 \
-    --num_epochs 1 \
+    --regularization_lambda 0.1 \
+    --modulation_scale 0.01 \
+    --batch_size 1 \
+    --gradient_accumulation_steps 16 \
+    --max_grad_norm 0.5 \
+    --warmup_steps 500 \
+    --use_layer_wise_loss_scaling \
+    --mixed_precision "no" \
+    --max_steps 5000
+```
+
+### 2. **Balanced (Recommended)**
+Good balance between training speed and stability.
+
+```bash
+python pretrain_npt_safe.py \
+    --model_name "meta-llama/Llama-3.1-8B" \
+    --adapter_rank 16 \
+    --learning_rate 1e-4 \
+    --regularization_lambda 0.01 \
+    --modulation_scale 0.1 \
+    --batch_size 1 \
+    --gradient_accumulation_steps 8 \
+    --max_grad_norm 1.0 \
     --warmup_steps 200 \
-    --output_dir ./outputs/npt-pretrained \
-    --log_steps 10 \
-    --save_steps 500 \
+    --use_layer_wise_loss_scaling \
+    --share_embeddings \
+    --mixed_precision "bf16" \
+    --max_steps 10000 \
+    --streaming \
     --use_wandb
+```
+
+### 3. **Aggressive (Faster Convergence)**
+For when you have good hardware and want faster training.
+
+```bash
+python pretrain_npt_safe.py \
+    --model_name "meta-llama/Llama-3.1-8B" \
+    --adapter_rank 32 \
+    --learning_rate 2e-4 \
+    --regularization_lambda 0.005 \
+    --modulation_scale 0.2 \
+    --batch_size 2 \
+    --gradient_accumulation_steps 4 \
+    --max_grad_norm 1.0 \
+    --warmup_steps 100 \
+    --mixed_precision "bf16" \
+    --max_steps 20000 \
+    --streaming
+
+```
+
     fi
+
+    python pretrain_npt_safe.py \
+    --model_name "meta-llama/Llama-3.1-8B" \
+    --adapter_rank 32 \
+    --learning_rate 2e-4 \
+    --regularization_lambda 0.005 \
+    --modulation_scale 0.2 \
+    --batch_size 2 \
+    --gradient_accumulation_steps 4 \
+    --max_grad_norm 1.0 \
+    --warmup_steps 100 \
+    --mixed_precision "bf16" \
+    --max_steps 20000
     
 elif [ "$PHASE" == "finetune" ]; then
     echo -e "\nStarting Phase 2: Functional Fine-tuning..."

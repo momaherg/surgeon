@@ -82,6 +82,7 @@ class ImprovedEquivalenceTrainer:
         self.nan_count = 0
         self.max_nan_count = 10  # Stop after this many NaN occurrences
         self.global_step = 0
+        self.last_checkpoint_path = None  # Track the last checkpoint for deletion
     
     def setup_models(self):
         """Load and setup teacher and student models with enhanced stability."""
@@ -528,6 +529,21 @@ class ImprovedEquivalenceTrainer:
         
         self.logger.info("Training completed!")
     
+    def cleanup_old_checkpoint(self, new_checkpoint_path: str):
+        """Remove old checkpoint to save storage space."""
+        if (self.last_checkpoint_path and 
+            self.last_checkpoint_path != new_checkpoint_path and 
+            os.path.exists(self.last_checkpoint_path)):
+            
+            # Only delete regular checkpoints, not best/final
+            if "checkpoint-best" not in self.last_checkpoint_path and "checkpoint-final" not in self.last_checkpoint_path:
+                import shutil
+                self.logger.info(f"Removing old checkpoint: {self.last_checkpoint_path}")
+                try:
+                    shutil.rmtree(self.last_checkpoint_path)
+                except Exception as e:
+                    self.logger.warning(f"Failed to remove old checkpoint: {e}")
+    
     def save_checkpoint(self, step: int, is_best: bool = False, is_final: bool = False):
         """Save model checkpoint."""
         if is_best:
@@ -536,6 +552,10 @@ class ImprovedEquivalenceTrainer:
             save_path = os.path.join(self.args.output_dir, "checkpoint-final")
         else:
             save_path = os.path.join(self.args.output_dir, f"checkpoint-{step}")
+        
+        # Clean up old checkpoint if saving a regular checkpoint (not best/final)
+        if not is_best and not is_final and self.args.keep_only_last_checkpoint:
+            self.cleanup_old_checkpoint(save_path)
         
         self.logger.info(f"Saving checkpoint to {save_path}")
         
@@ -555,6 +575,10 @@ class ImprovedEquivalenceTrainer:
                 }
             }
         )
+        
+        # Update last checkpoint path for regular checkpoints
+        if not is_best and not is_final:
+            self.last_checkpoint_path = save_path
 
 
 def parse_args():
@@ -814,6 +838,11 @@ def parse_args():
         default="no",
         choices=["no", "fp16", "bf16"],
         help="Mixed precision training"
+    )
+    parser.add_argument(
+        "--keep_only_last_checkpoint",
+        action="store_true",
+        help="Keep only the last checkpoint to save storage space"
     )
     
     return parser.parse_args()
