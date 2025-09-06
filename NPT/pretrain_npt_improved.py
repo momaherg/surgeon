@@ -355,6 +355,9 @@ class ImprovedEquivalenceTrainer:
             # Apply final layer norm
             hidden_states = self.student_model.model.norm(hidden_states)
             
+            # Add the final normalized hidden states to match teacher's output structure
+            all_hidden_states.append(hidden_states)
+            
             # Use improved loss function
             loss_dict = self.loss_fn(
                 teacher_hidden_states=teacher_hidden_states,
@@ -722,6 +725,10 @@ class ImprovedEquivalenceTrainer:
                         else:
                             hidden_states = layer_outputs
                         student_hidden.append(hidden_states)
+                    
+                    # Apply final layer norm to match teacher's output structure
+                    hidden_states = self.student_model.model.norm(hidden_states)
+                    student_hidden.append(hidden_states)
                     
                     # Compute differences for each layer
                     for layer_idx in range(min(len(teacher_hidden), len(student_hidden))):
