@@ -502,11 +502,12 @@ class ImprovedEquivalenceTrainer:
                         'reg': f"{metrics['loss/regularization']:.4f}"
                     })
                 
-                # Generate sample predictions
+                # Generate sample predictions and compute hidden state differences
                 if (self.args.prediction_steps > 0 and 
                     self.global_step % self.args.prediction_steps == 0 and 
                     self.global_step > 0):
                     self.generate_sample_predictions()
+                    self.compute_hidden_state_differences()
                 
                 # Save checkpoint
                 if self.global_step % self.args.save_steps == 0 and self.global_step > 0:
@@ -653,6 +654,141 @@ class ImprovedEquivalenceTrainer:
                           p.split("\n")[1].replace("  Response: ", "")] for p in predictions]
                 )
             }, step=self.global_step)
+    
+    def compute_hidden_state_differences(self, num_samples=5):
+        """Compute differences between teacher and student hidden states."""
+        self.logger.info("Computing hidden state differences...")
+        
+        # Set models to eval mode
+        self.student_model.eval()
+        self.teacher_model.eval()
+        
+        all_mse_diffs = []
+        all_cosine_sims = []
+        layer_diffs = {}
+        
+        with torch.no_grad():
+            # Use first few prompts for analysis
+            for i, prompt in enumerate(self.sample_prompts[:num_samples]):
+                inputs = self.tokenizer(prompt, return_tensors="pt", padding=True, max_length=128, truncation=True)
+                input_ids = inputs.input_ids.to(self.accelerator.device)
+                attention_mask = inputs.attention_mask.to(self.accelerator.device)
+                
+                # Ensure proper dtype for attention mask
+                if self.args.use_quantization:
+                    target_dtype = torch.float32
+                elif self.args.use_fp16:
+                    target_dtype = torch.float16
+                else:
+                    target_dtype = torch.float32
+                attention_mask = attention_mask.to(dtype=target_dtype)
+                
+                try:
+                    # Get teacher hidden states
+                    teacher_outputs = self.teacher_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        output_hidden_states=True
+                    )
+                    teacher_hidden = teacher_outputs.hidden_states
+                    
+                    # Get student hidden states manually through layers
+                    student_hidden = []
+                    hidden_states = self.student_model.model.embed_tokens(input_ids)
+                    student_hidden.append(hidden_states)
+                    
+                    # Create position_ids
+                    batch_size, seq_length = input_ids.shape
+                    device = input_ids.device
+                    position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+                    position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+                    
+                    # Get position embeddings if available
+                    position_embeddings = None
+                    if hasattr(self.student_model.model, 'rotary_emb'):
+                        cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
+                        position_embeddings = (cos, sin)
+                    
+                    # Pass through layers
+                    for layer in self.student_model.model.layers:
+                        layer_outputs = layer(
+                            hidden_states,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            position_embeddings=position_embeddings
+                        )
+                        if isinstance(layer_outputs, tuple):
+                            hidden_states = layer_outputs[0]
+                        else:
+                            hidden_states = layer_outputs
+                        student_hidden.append(hidden_states)
+                    
+                    # Compute differences for each layer
+                    for layer_idx in range(min(len(teacher_hidden), len(student_hidden))):
+                        teacher_h = teacher_hidden[layer_idx]
+                        student_h = student_hidden[layer_idx]
+                        
+                        # Ensure same dtype
+                        if teacher_h.dtype != student_h.dtype:
+                            teacher_h = teacher_h.to(student_h.dtype)
+                        
+                        # Compute MSE difference
+                        mse_diff = torch.mean((teacher_h - student_h) ** 2).item()
+                        
+                        # Compute cosine similarity
+                        teacher_norm = teacher_h / (torch.norm(teacher_h, dim=-1, keepdim=True) + 1e-8)
+                        student_norm = student_h / (torch.norm(student_h, dim=-1, keepdim=True) + 1e-8)
+                        cosine_sim = torch.mean(torch.sum(teacher_norm * student_norm, dim=-1)).item()
+                        
+                        if layer_idx not in layer_diffs:
+                            layer_diffs[layer_idx] = {'mse': [], 'cosine': []}
+                        
+                        layer_diffs[layer_idx]['mse'].append(mse_diff)
+                        layer_diffs[layer_idx]['cosine'].append(cosine_sim)
+                        
+                        if layer_idx == len(teacher_hidden) - 1:  # Last layer
+                            all_mse_diffs.append(mse_diff)
+                            all_cosine_sims.append(cosine_sim)
+                
+                except Exception as e:
+                    self.logger.warning(f"Failed to compute hidden states for prompt '{prompt}': {str(e)}")
+                    continue
+        
+        # Log results
+        if all_mse_diffs:
+            avg_mse = sum(all_mse_diffs) / len(all_mse_diffs)
+            avg_cosine = sum(all_cosine_sims) / len(all_cosine_sims)
+            
+            self.logger.info(f"\n{'='*60}\nStep {self.global_step} - Hidden State Differences:\n{'='*60}")
+            self.logger.info(f"Average MSE difference (last layer): {avg_mse:.6f}")
+            self.logger.info(f"Average cosine similarity (last layer): {avg_cosine:.6f}")
+            
+            # Log per-layer statistics
+            self.logger.info("\nPer-layer statistics:")
+            for layer_idx in sorted(layer_diffs.keys()):
+                avg_layer_mse = sum(layer_diffs[layer_idx]['mse']) / len(layer_diffs[layer_idx]['mse'])
+                avg_layer_cosine = sum(layer_diffs[layer_idx]['cosine']) / len(layer_diffs[layer_idx]['cosine'])
+                self.logger.info(f"  Layer {layer_idx}: MSE={avg_layer_mse:.6f}, Cosine={avg_layer_cosine:.6f}")
+            
+            self.logger.info("="*60 + "\n")
+            
+            # Log to wandb if enabled
+            if self.args.use_wandb and self.metrics_logger.use_wandb:
+                wandb_metrics = {
+                    'hidden_states/avg_mse_diff': avg_mse,
+                    'hidden_states/avg_cosine_sim': avg_cosine
+                }
+                for layer_idx in layer_diffs:
+                    avg_layer_mse = sum(layer_diffs[layer_idx]['mse']) / len(layer_diffs[layer_idx]['mse'])
+                    avg_layer_cosine = sum(layer_diffs[layer_idx]['cosine']) / len(layer_diffs[layer_idx]['cosine'])
+                    wandb_metrics[f'hidden_states/layer_{layer_idx}_mse'] = avg_layer_mse
+                    wandb_metrics[f'hidden_states/layer_{layer_idx}_cosine'] = avg_layer_cosine
+                
+                self.metrics_logger.log(wandb_metrics, step=self.global_step)
+        
+        # Set models back to training mode
+        self.student_model.train()
+        self.teacher_model.eval()  # Teacher always in eval mode
 
 
 def parse_args():
