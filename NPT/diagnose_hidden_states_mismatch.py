@@ -27,7 +27,7 @@ def diagnose_hidden_states(model_name="meta-llama/Llama-3.1-8B", use_quantizatio
     # Model loading args
     model_kwargs = {
         "config": config,
-        "torch_dtype": torch.float32 if not use_quantization else torch.float16,
+        "dtype": torch.float32 if not use_quantization else torch.float16,
         "device_map": "auto"
     }
     
@@ -40,9 +40,13 @@ def diagnose_hidden_states(model_name="meta-llama/Llama-3.1-8B", use_quantizatio
     teacher_model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
     teacher_model.eval()
     
+    # Get device from model
+    device = next(teacher_model.parameters()).device
+    
     # Test input
     test_text = "The capital of France is"
     inputs = tokenizer(test_text, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
     
     # Get teacher outputs with detailed analysis
     logger.info("\n" + "="*60)
@@ -202,12 +206,9 @@ def main():
     except Exception as e:
         logger.warning(f"Could not check implementation: {e}")
     
-    # Then run diagnosis on a small model
-    print("\nTesting with GPT-2 (smaller model for quick testing):")
-    diagnose_hidden_states("gpt2")
-    
-    print("\n\nTo test with Llama-3.1-8B, uncomment the line below:")
-    # diagnose_hidden_states("meta-llama/Llama-3.1-8B", use_quantization=True)
+    # Test with the actual model
+    print("\nTesting with Llama-3.1-8B:")
+    diagnose_hidden_states("meta-llama/Llama-3.1-8B", use_quantization=True)
 
 
 if __name__ == "__main__":
