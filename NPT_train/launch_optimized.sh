@@ -43,7 +43,7 @@ fi
 
 # Run training with optimizations
 python3 train_npt_optimized.py \
-    --config $CONFIG \
+    --config  \
     --use-optimized \
     2>&1 | tee logs/training_optimized_$(date +%Y%m%d_%H%M%S).log
 
