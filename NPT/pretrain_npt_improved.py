@@ -331,11 +331,26 @@ class ImprovedEquivalenceTrainer:
                 cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
                 position_embeddings = (cos, sin)
             
-            # Pass through layers
+            # Pass through layers with teacher forcing to prevent error propagation
             for i, layer in enumerate(self.student_model.model.layers):
-                # Forward through NPT layer
+                # CRITICAL: Use teacher's hidden states as input to prevent error propagation
+                # Each NPT layer should learn to match teacher behavior given the SAME input
+                if i == 0:
+                    # First layer uses embeddings (which are often shared anyway)
+                    layer_input = hidden_states
+                else:
+                    # Use teacher's output from previous layer as input
+                    # This prevents error accumulation through the network
+                    layer_input = teacher_hidden_states[i].detach()
+                
+                # Update position embeddings if needed (they depend on the hidden states)
+                if position_embeddings is not None and i > 0:
+                    cos, sin = self.student_model.model.rotary_emb(layer_input, position_ids)
+                    position_embeddings = (cos, sin)
+                
+                # Forward through NPT layer with teacher-forced input
                 layer_outputs = layer(
-                    hidden_states,
+                    layer_input,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings
@@ -343,14 +358,19 @@ class ImprovedEquivalenceTrainer:
                 
                 # Handle different output formats
                 if isinstance(layer_outputs, tuple):
-                    hidden_states = layer_outputs[0]
+                    student_output = layer_outputs[0]
                     # Collect regularization if available
                     if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
                         reg_norms.append(layer_outputs[1])
                 else:
-                    hidden_states = layer_outputs
+                    student_output = layer_outputs
                 
-                all_hidden_states.append(hidden_states)
+                # Store the student's output for loss computation
+                all_hidden_states.append(student_output)
+                
+                # Keep hidden_states for final layer norm
+                if i == len(self.student_model.model.layers) - 1:
+                    hidden_states = student_output
             
             # Apply final layer norm
             hidden_states = self.student_model.model.norm(hidden_states)
@@ -709,19 +729,30 @@ class ImprovedEquivalenceTrainer:
                         cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
                         position_embeddings = (cos, sin)
                     
-                    # Pass through layers
-                    for layer in self.student_model.model.layers:
+                    # Pass through layers with teacher forcing (same as training)
+                    for layer_idx, layer in enumerate(self.student_model.model.layers):
+                        # Use teacher forcing to get accurate per-layer comparisons
+                        if layer_idx == 0:
+                            layer_input = hidden_states
+                        else:
+                            layer_input = teacher_hidden[layer_idx].detach()
+                        
+                        # Update position embeddings if needed
+                        if position_embeddings is not None and layer_idx > 0:
+                            cos, sin = self.student_model.model.rotary_emb(layer_input, position_ids)
+                            position_embeddings = (cos, sin)
+                        
                         layer_outputs = layer(
-                            hidden_states,
+                            layer_input,
                             attention_mask=attention_mask,
                             position_ids=position_ids,
                             position_embeddings=position_embeddings
                         )
                         if isinstance(layer_outputs, tuple):
-                            hidden_states = layer_outputs[0]
+                            student_output = layer_outputs[0]
                         else:
-                            hidden_states = layer_outputs
-                        student_hidden.append(hidden_states)
+                            student_output = layer_outputs
+                        student_hidden.append(student_output)
                     
                     # Compute differences for each layer
                     for layer_idx in range(min(len(teacher_hidden), len(student_hidden))):
@@ -1087,3 +1118,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
