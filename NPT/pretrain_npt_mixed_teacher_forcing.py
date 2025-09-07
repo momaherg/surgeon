@@ -297,7 +297,11 @@ class MixedTeacherForcingNPTTrainer:
         # Get position embeddings if available
         position_embeddings = None
         if hasattr(self.student_model.model, 'rotary_emb'):
-            cos, sin = self.student_model.model.rotary_emb(teacher_hidden_states[0], position_ids)
+            # Ensure we pass a tensor, not a tuple
+            embeddings_input = teacher_hidden_states[0]
+            if isinstance(embeddings_input, tuple):
+                embeddings_input = embeddings_input[0]
+            cos, sin = self.student_model.model.rotary_emb(embeddings_input, position_ids)
             position_embeddings = (cos, sin)
         
         # Process each layer with teacher inputs
@@ -305,12 +309,19 @@ class MixedTeacherForcingNPTTrainer:
         reg_norms = []
         
         # Start with embeddings
-        all_student_hidden_states.append(teacher_hidden_states[0])
+        initial_embeddings = teacher_hidden_states[0]
+        if isinstance(initial_embeddings, tuple):
+            initial_embeddings = initial_embeddings[0]
+        all_student_hidden_states.append(initial_embeddings)
         
         # Process each layer
         for i, layer in enumerate(self.student_model.model.layers):
             # Use teacher input for this layer
             teacher_input = teacher_hidden_states[i]
+            
+            # Ensure teacher_input is a tensor, not a tuple
+            if isinstance(teacher_input, tuple):
+                teacher_input = teacher_input[0]
             
             layer_outputs = layer(
                 teacher_input,
