@@ -291,8 +291,8 @@ class NPTLayerOptimized(nn.Module):
         # Add residual connection
         hidden_states = residual + hidden_states
         
-        outputs = (hidden_states,) + attn_outputs[1:]
-        return outputs
+        # Always return a tuple to match HF layer contract
+        return (hidden_states,) + attn_outputs[1:]
     
     def forward_original(
         self,
@@ -331,5 +331,5 @@ class NPTLayerOptimized(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
         
-        outputs = (hidden_states,) + attn_outputs[1:]
-        return outputs
+        # Always return a tuple to match HF layer contract
+        return (hidden_states,) + attn_outputs[1:]
