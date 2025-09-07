@@ -1,0 +1,42 @@
+# NPT Training Configuration
+model:
+  base_model_name: "meta-llama/Llama-2-7b-hf"  # Can be changed to Llama-3.1-8B
+  npt_layers: "upper_half"  # Options: "all", "upper_half", "lower_half", or list of layer indices
+  rank: 16  # Rank for low-rank adapters (A and B matrices)
+  modulation_scale: 0.1  # Scaling factor for weight deltas
+  
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 8
+  learning_rate: 1e-4
+  num_epochs: 3
+  warmup_steps: 500
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Loss weights
+  equivalence_weight: 1.0
+  regularization_weight: 0.01  # For low-magnitude ΔW constraint
+  
+  # Logging
+  logging_steps: 50
+  prediction_logging_steps: 150
+  eval_steps: 500
+  save_steps: 1000
+  
+data:
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-103-v1"
+  max_length: 512
+  num_train_samples: 10000  # For initial experiments
+  num_eval_samples: 1000
+  
+wandb:
+  project: "npt-equivalence-pretraining"
+  entity: null  # Set your WandB entity
+  tags: ["npt", "phase1", "equivalence"]
+  
+paths:
+  output_dir: "./outputs"
+  cache_dir: "./cache"
+  checkpoint_dir: "./checkpoints"

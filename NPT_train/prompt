@@ -1,0 +1,70 @@
+Of course. Here is an official technical report detailing the initial training phase for the newly named Neuro-Plastic Transformer (NPT), based on your research proposal.
+
+---
+
+## Technical Report: Initial Training Protocol for Neuro-Plastic Transformer (NPT) Components
+
+**Project Title:** Neuro-Plastic Transformer (NPT) for Dynamic In-Context Learning and Persistent Model Specialization
+**Document ID:** NPT-TR-Phase1-v1.0
+**Date:** October 26, 2023
+**Authors:** [Your Name/Lab Name]
+
+### Executive Summary
+
+This report outlines the methodology for the initial training phase of the **Neuro-Plastic Transformer (NPT)**, a novel architecture designed to enhance in-context learning and enable persistent, targeted model updates. The NPT architecture replaces the standard additive attention residual with a **Neuro-Plastic (NP) Component**, which uses the attention output to dynamically modulate the weights of the feed-forward network (MLP) on a per-token basis. This initial training, termed **"Equivalence Pre-training,"** is a critical first step. Its primary objective is to train the newly introduced NP components to functionally mimic the behavior of the original transformer's residual connections. This ensures that the NPT model begins as a high-fidelity equivalent of the base pre-trained model, providing a stable foundation for subsequent functional fine-tuning and permanent specialization experiments, while simultaneously instilling a crucial property of generating low-magnitude weight updates.
+
+### 1. Introduction to the Neuro-Plastic Transformer (NPT)
+
+The Neuro-Plastic Transformer (NPT) represents a fundamental shift from conventional transformer architectures. Standard models utilize an additive residual connection, where the output of the self-attention mechanism is added directly to the input hidden state (`h_new = h_old + attn_output`). This mechanism is a cornerstone of their in-context learning capabilities.
+
+The NPT architecture proposes a more expressive, multiplicative interaction. Instead of adding the attention signal to the activation, we use it to generate a **transient weight delta (`ΔW`)** that directly modulates the weights of the subsequent MLP layer. This is accomplished via a lightweight, low-rank adapter, which we term the **Neuro-Plastic (NP) Component**.
+
+This design endows the model with two operational modes: a **Dynamic Mode** for superior real-time reasoning and a **Permanent Update Mode** for surgically integrating new knowledge. This report focuses exclusively on the foundational training required to initialize the NP components before these advanced capabilities can be leveraged.
+
+### 2. NPT Architecture and the Neuro-Plastic (NP) Component
+
+To understand the training, we must first define the architectural modification.
+
+**Standard Transformer Block:**
+```
+1. attn_output = SelfAttention(LayerNorm(h))
+2. h_residual = h + attn_output
+3. output = MLP(LayerNorm(h_residual))
+```
+
+**NPT Block with Neuro-Plastic Component:**
+```
+1. attn_output = SelfAttention(LayerNorm(h))
+2. ΔW_in = NP_Component(attn_output)      // New component generates a weight delta
+3. W_in_modulated = W_in_base + ΔW_in      // Weights are modulated for this token
+4. output = MLP_out(GELU(W_in_modulated @ LayerNorm(h))) + h // Residual after MLP
+```
+
+The `NP_Component` is a low-rank adapter consisting of two trainable matrices, `A ∈ R^(d_model x r)` and `B ∈ R^(r x d_ffn)`, where `r` is a small rank (e.g., 8, 16, 32). The weight delta is generated as: `ΔW_in = (attn_output @ A) @ B`.
+
+#### 2.1. Selective Layer Conversion
+
+A key feature of the NPT architecture is its flexibility. It is not necessary to convert every transformer layer into an NPT layer. The model can be configured as a hybrid, where certain layers retain their standard residual connections while others are equipped with NP components. For instance, initial experiments may focus on converting only the upper half of the model's layers, as these are more closely associated with abstract reasoning and knowledge synthesis, making them prime candidates for dynamic modulation and specialization. This selective approach allows for a controlled analysis of the impact of NP components and can reduce the trainable parameter count.
+
+### 3. Phase 1: Equivalence Pre-training Protocol
+
+The goal of this phase is **not** to teach the model new skills, but to train the randomly initialized NP components (`A` and `B` matrices) to replicate the function of the original residual connections they replace. This ensures the NPT model inherits the full capabilities of the base pre-trained LLM.
+
+#### 3.1. Model Configuration and Parameter Freezing
+1.  **Base Model:** A pre-trained foundation model (e.g., meta-llama/Llama-3.1-8B) is loaded.
+2.  **Architectural Modification:** Selected transformer layers are converted to NPT layers by inserting the `A` and `B` adapter matrices and rerouting the data flow as described in Section 2.
+3.  **Parameter Freezing:** All original parameters of the base LLM are **frozen**. This includes self-attention weights, MLP weights (`W_in_base`, `W_out`), and layer normalization parameters.
+4.  **Trainable Parameters:** The **only** trainable parameters during this phase are the newly introduced `A` and `B` matrices within each NP component.
+
+#### 3.2. Training Objective and Loss Function
+To achieve functional equivalence, we run the same input hidden state `h` through both the original, unmodified transformer layer and our new NPT layer in parallel. The training objective is to minimize the difference in their outputs.
+
+### 4. Expected Outcomes and Verification
+
+Upon completion of Phase 1, we expect the following outcomes:
+1.  **High Functional Fidelity:** The NPT model, when operated in its default Dynamic Mode, should exhibit performance nearly identical to the original base model on a suite of standard benchmarks (e.g., MMLU, Hellaswag, TriviaQA). The perplexity on a held-out test set should be very close to that of the base model.
+2.  **Low-Magnitude `ΔW`:** The average Frobenius norm of the `ΔW` matrices generated across a diverse validation set should be verifiably low, confirming the success of the regularization term. This is a key indicator of the model's readiness for permanent updates.
+
+Successful completion of this phase yields a "primed" NPT model—a model that possesses the full knowledge of its pre-trained ancestor but is now architecturally equipped for advanced dynamic reasoning and specialization. This model serves as the starting point for all subsequent research in Phase 2 (Functional Fine-tuning) and Phase 3 (Permanent Update Experiments).
+
+Use WandB for tracking training and print model predictions every 150 trianing step to diagnose the improvements of the model.
