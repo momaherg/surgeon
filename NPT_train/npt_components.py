@@ -51,42 +51,78 @@ class NeuroPlasticComponent(nn.Module):
             attn_output: Tensor of shape (batch_size, seq_len, d_model)
             
         Returns:
-            delta_w: Tensor of shape (batch_size, seq_len, d_model, d_ffn)
+            modulation: Tensor of shape (batch_size, seq_len, rank)
+                       This will be used to compute weight deltas on-demand
         """
-        # Compute low-rank weight delta
+        # Compute low-rank modulation factors
         # attn_output: (batch, seq_len, d_model)
         # A: (d_model, rank)
-        # B: (rank, d_ffn)
         
         # Step 1: attn_output @ A -> (batch, seq_len, rank)
-        intermediate = attn_output @ self.A
+        modulation = attn_output @ self.A  # (batch, seq_len, rank)
         
-        # Step 2: Expand for batch matrix multiplication
-        # We need to compute (batch, seq_len, rank) @ (rank, d_ffn) for each token
-        # Result should be (batch, seq_len, d_model, d_ffn)
-        
-        # Simpler approach: Use attention to compute scaling factors
-        # Generate a rank-dimensional modulation vector for each token
-        modulation = intermediate  # (batch, seq_len, rank)
-        
-        # Apply modulation scale
+        # Apply modulation scale and non-linearity
         modulation = self.modulation_scale * torch.tanh(modulation)
         
-        # Compute the weight delta
-        # We want: for each position, ΔW = sum_r (modulation[r] * A[:, r] @ B[r, :])
-        delta_w = torch.einsum('bsr,dr,rf->bsdf', modulation, self.A, self.B)
+        # Return modulation factors instead of full weight delta
+        # The actual weight delta will be computed on-demand during forward pass
+        return modulation
+    
+    def compute_weight_delta(self, modulation: torch.Tensor, token_idx: int) -> torch.Tensor:
+        """
+        Compute weight delta for a specific token.
+        
+        Args:
+            modulation: Tensor of shape (batch_size, seq_len, rank)
+            token_idx: Index of the token to compute delta for
+            
+        Returns:
+            delta_w: Tensor of shape (batch_size, d_model, d_ffn)
+        """
+        # Extract modulation for specific token
+        token_mod = modulation[:, token_idx, :]  # (batch, rank)
+        
+        # Compute weight delta: ΔW = A @ (token_mod * B^T)
+        # More efficient: ΔW = A @ diag(token_mod) @ B
+        # Even more efficient: ΔW = (A * token_mod.unsqueeze(1)) @ B
+        
+        # Expand dimensions for broadcasting
+        token_mod_expanded = token_mod.unsqueeze(1)  # (batch, 1, rank)
+        A_expanded = self.A.unsqueeze(0)  # (1, d_model, rank)
+        
+        # Modulate A matrix
+        A_modulated = A_expanded * token_mod_expanded  # (batch, d_model, rank)
+        
+        # Compute final weight delta
+        delta_w = A_modulated @ self.B  # (batch, d_model, d_ffn)
         
         return delta_w
     
     def get_weight_delta_stats(self, attn_output: torch.Tensor) -> Dict[str, float]:
         """Compute statistics about the generated weight deltas."""
         with torch.no_grad():
-            delta_w = self.forward(attn_output)
+            modulation = self.forward(attn_output)
+            batch_size, seq_len, _ = modulation.shape
+            
+            # Sample a few tokens to compute statistics
+            num_samples = min(seq_len, 10)
+            sample_indices = torch.linspace(0, seq_len-1, num_samples, dtype=torch.long)
+            
+            delta_norms = []
+            delta_means = []
+            delta_maxs = []
+            
+            for idx in sample_indices:
+                delta_w = self.compute_weight_delta(modulation, idx.item())
+                delta_norms.append(torch.norm(delta_w, p='fro', dim=(-2, -1)).mean().item())
+                delta_means.append(delta_w.mean().item())
+                delta_maxs.append(delta_w.abs().max().item())
+            
             stats = {
-                'delta_w_mean': delta_w.mean().item(),
-                'delta_w_std': delta_w.std().item(),
-                'delta_w_max': delta_w.abs().max().item(),
-                'delta_w_frobenius': torch.norm(delta_w, p='fro', dim=(-2, -1)).mean().item(),
+                'delta_w_mean': sum(delta_means) / len(delta_means),
+                'delta_w_std': torch.std(torch.tensor(delta_means)).item(),
+                'delta_w_max': max(delta_maxs),
+                'delta_w_frobenius': sum(delta_norms) / len(delta_norms),
             }
         return stats
 
@@ -174,48 +210,66 @@ class NPTLayer(nn.Module):
         )
         attn_output = attn_outputs[0]
         
-        # Generate weight delta from attention output
-        delta_w = self.np_component(attn_output)
+        # Generate modulation factors from attention output
+        modulation = self.np_component(attn_output)
         
-        # Apply layer norm before MLP (using residual + attn as in standard transformer)
-        # Note: In NPT, we don't add attention to residual here
+        # Apply layer norm before MLP (using residual as in NPT design)
         hidden_states = self.post_attention_layernorm(residual)
         
         # Modulated MLP forward pass
-        # Standard MLP: gate_proj and up_proj in parallel, then down_proj
-        # We'll modulate the gate_proj weights
+        batch_size, seq_len, d_model = hidden_states.shape
+        device = hidden_states.device
+        dtype = hidden_states.dtype
         
-        batch_size, seq_len = hidden_states.shape[:2]
+        # Process tokens in chunks to balance memory and efficiency
+        chunk_size = 8  # Process 8 tokens at a time
+        output_chunks = []
         
-        # Reshape for batch matrix multiplication
-        hidden_states_reshaped = hidden_states.view(batch_size * seq_len, -1)
-        
-        # Apply modulated weights for each token
-        # This is computationally expensive but necessary for per-token modulation
-        outputs = []
-        for b in range(batch_size):
-            for s in range(seq_len):
-                h = hidden_states[b, s]  # (d_model,)
+        for chunk_start in range(0, seq_len, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, seq_len)
+            chunk_hidden = hidden_states[:, chunk_start:chunk_end, :]  # (batch, chunk_size, d_model)
+            chunk_outputs = []
+            
+            # Process each token in the chunk
+            for token_idx in range(chunk_start, chunk_end):
+                # Get modulation-based weight delta for this token
+                delta_w = self.np_component.compute_weight_delta(modulation, token_idx)  # (batch, d_model, d_ffn)
                 
-                # Modulate first layer weights
-                W_in_modulated = self.W_in_base + delta_w[b, s].T  # (d_ffn, d_model)
+                # Get hidden state for this token
+                h = hidden_states[:, token_idx, :]  # (batch, d_model)
                 
                 # Apply modulated MLP based on architecture
                 if self.mlp_type == 'llama':
-                    # LLaMA-style: gate and up projections
-                    gate = F.silu(F.linear(h, W_in_modulated))
-                    up = F.linear(h, self.W_up_base)
+                    # Modulate gate weights
+                    W_gate_modulated = self.W_in_base.unsqueeze(0) + delta_w.transpose(-2, -1)  # (batch, d_ffn, d_model)
+                    
+                    # Compute gate activation for all batches at once
+                    gate = F.silu(torch.bmm(W_gate_modulated, h.unsqueeze(-1)).squeeze(-1))  # (batch, d_ffn)
+                    
+                    # Up projection (unmodulated)
+                    up = F.linear(h, self.W_up_base)  # (batch, d_ffn)
+                    
+                    # Element-wise product and down projection
                     intermediate = gate * up
-                    output = self.mlp.down_proj(intermediate)
+                    output = self.mlp.down_proj(intermediate)  # (batch, d_model)
                 else:  # GPT2
-                    # GPT2-style: single projection with GELU
-                    intermediate = F.gelu(F.linear(h, W_in_modulated))
-                    output = self.mlp.c_proj(intermediate)
+                    # Modulate c_fc weights
+                    W_fc_modulated = self.W_in_base.unsqueeze(0) + delta_w.transpose(-2, -1)  # (batch, d_ffn, d_model)
+                    
+                    # Compute activation for all batches at once
+                    intermediate = F.gelu(torch.bmm(W_fc_modulated, h.unsqueeze(-1)).squeeze(-1))  # (batch, d_ffn)
+                    
+                    # Output projection
+                    output = self.mlp.c_proj(intermediate)  # (batch, d_model)
                 
-                outputs.append(output)
+                chunk_outputs.append(output)
+            
+            # Stack outputs for this chunk
+            chunk_output = torch.stack(chunk_outputs, dim=1)  # (batch, chunk_size, d_model)
+            output_chunks.append(chunk_output)
         
-        # Stack outputs
-        hidden_states = torch.stack(outputs, dim=0).view(batch_size, seq_len, -1)
+        # Concatenate all chunks
+        hidden_states = torch.cat(output_chunks, dim=1)  # (batch, seq_len, d_model)
         
         # Add residual connection
         hidden_states = residual + hidden_states
