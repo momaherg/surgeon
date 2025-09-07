@@ -131,11 +131,14 @@ class NPTModelWrapper(nn.Module):
         Returns:
             Dictionary containing model outputs and optionally original outputs
         """
+        # Ensure we get hidden states, but don't duplicate the parameter
+        if 'output_hidden_states' not in kwargs:
+            kwargs['output_hidden_states'] = True
+        
         # NPT forward pass
         npt_outputs = self._original_forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            output_hidden_states=True,
             **kwargs,
         )
         
