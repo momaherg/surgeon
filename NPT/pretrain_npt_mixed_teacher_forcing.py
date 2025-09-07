@@ -218,7 +218,14 @@ class MixedTeacherForcingNPTTrainer:
         forward pass based on curriculum schedule.
         """
         input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask']
+        attention_mask = batch.get('attention_mask', None)
+        
+        # Handle case where input_ids or attention_mask might be tuples or wrapped
+        if isinstance(input_ids, tuple):
+            input_ids = input_ids[0]
+            
+        if attention_mask is not None and isinstance(attention_mask, tuple):
+            attention_mask = attention_mask[0]
         
         # Get current teacher forcing ratio
         teacher_ratio = self.get_teacher_forcing_ratio()
@@ -240,7 +247,9 @@ class MixedTeacherForcingNPTTrainer:
             
         except Exception as e:
             self.logger.error(f"Error in loss computation: {str(e)}")
-            device = input_ids.device
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            device = input_ids.device if hasattr(input_ids, 'device') else 'cpu'
             return {
                 'total_loss': torch.tensor(1e-4, device=device, requires_grad=True),
                 'hidden_loss': torch.tensor(1e-4, device=device, requires_grad=True),
@@ -250,6 +259,23 @@ class MixedTeacherForcingNPTTrainer:
     
     def compute_teacher_guided_loss(self, input_ids, attention_mask):
         """Compute loss with teacher-guided layer inputs."""
+        # Ensure attention_mask is a tensor, not a tuple
+        if attention_mask is not None and isinstance(attention_mask, tuple):
+            attention_mask = attention_mask[0]
+            
+        # Ensure proper dtype for attention mask
+        if attention_mask is not None and hasattr(attention_mask, 'dtype'):
+            # Get target dtype from model config
+            if self.args.use_quantization:
+                target_dtype = torch.float32
+            elif self.args.use_fp16:
+                target_dtype = torch.float16
+            else:
+                target_dtype = torch.float32
+            
+            if attention_mask.dtype != target_dtype:
+                attention_mask = attention_mask.to(dtype=target_dtype)
+        
         # Get teacher outputs
         with torch.no_grad():
             teacher_outputs = self.teacher_model(
@@ -339,6 +365,23 @@ class MixedTeacherForcingNPTTrainer:
     
     def compute_student_guided_loss(self, input_ids, attention_mask):
         """Compute loss with student's own outputs (actual inference)."""
+        # Ensure attention_mask is a tensor, not a tuple
+        if attention_mask is not None and isinstance(attention_mask, tuple):
+            attention_mask = attention_mask[0]
+            
+        # Ensure proper dtype for attention mask
+        if attention_mask is not None and hasattr(attention_mask, 'dtype'):
+            # Get target dtype from model config
+            if self.args.use_quantization:
+                target_dtype = torch.float32
+            elif self.args.use_fp16:
+                target_dtype = torch.float16
+            else:
+                target_dtype = torch.float32
+            
+            if attention_mask.dtype != target_dtype:
+                attention_mask = attention_mask.to(dtype=target_dtype)
+        
         # Get teacher outputs
         with torch.no_grad():
             teacher_outputs = self.teacher_model(
@@ -464,6 +507,13 @@ class MixedTeacherForcingNPTTrainer:
     def train_step(self, batch):
         """Perform a single training step."""
         try:
+            # Debug batch structure on first step
+            if self.global_step == 0:
+                self.logger.info(f"Batch structure: {type(batch)}")
+                if isinstance(batch, dict):
+                    for k, v in batch.items():
+                        self.logger.info(f"  {k}: type={type(v)}, shape={v.shape if hasattr(v, 'shape') else 'N/A'}")
+            
             # Compute loss with mixed teacher forcing
             loss_dict = self.compute_mixed_loss(batch)
             total_loss = loss_dict['total_loss']
