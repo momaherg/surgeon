@@ -10,6 +10,7 @@ import os
 import argparse
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import (
     AutoModelForCausalLM,
@@ -674,14 +675,17 @@ class TeacherGuidedNPTTrainer:
         
         # Also log to wandb if enabled
         if self.args.use_wandb and self.metrics_logger.use_wandb:
-            import wandb
-            wandb.log({
-                "sample_predictions": wandb.Table(
-                    columns=["step", "prompt", "response"],
-                    data=[[self.global_step, p.split("\n")[0].replace("  Prompt: ", ""), 
-                          p.split("\n")[1].replace("  Response: ", "")] for p in predictions]
-                )
-            }, step=self.global_step)
+            try:
+                import wandb
+                wandb.log({
+                    "sample_predictions": wandb.Table(
+                        columns=["step", "prompt", "response"],
+                        data=[[self.global_step, p.split("\n")[0].replace("  Prompt: ", ""), 
+                              p.split("\n")[1].replace("  Response: ", "")] for p in predictions]
+                    )
+                }, step=self.global_step)
+            except ImportError:
+                pass  # wandb not installed
     
     def compute_hidden_state_differences(self, num_samples=5):
         """
