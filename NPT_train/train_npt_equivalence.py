@@ -272,8 +272,8 @@ def train_npt_equivalence(config_path: str = "config.yaml"):
     model = NPTModelWrapper(
         base_model_name=config['model']['base_model_name'],
         npt_layers=config['model']['npt_layers'],
-        rank=config['model']['rank'],
-        modulation_scale=config['model']['modulation_scale'],
+        rank=int(config['model']['rank']),
+        modulation_scale=float(config['model']['modulation_scale']),
         cache_dir=config['paths']['cache_dir'],
     )
     
@@ -304,15 +304,15 @@ def train_npt_equivalence(config_path: str = "config.yaml"):
     
     # Create loss function
     loss_fn = EquivalenceLoss(
-        equivalence_weight=config['training']['equivalence_weight'],
-        regularization_weight=config['training']['regularization_weight'],
+        equivalence_weight=float(config['training']['equivalence_weight']),
+        regularization_weight=float(config['training']['regularization_weight']),
     )
     
     # Create optimizer (only for NPT parameters)
     optimizer = torch.optim.AdamW(
         model.get_trainable_parameters(),
-        lr=config['training']['learning_rate'],
-        weight_decay=config['training']['weight_decay'],
+        lr=float(config['training']['learning_rate']),
+        weight_decay=float(config['training']['weight_decay']),
     )
     
     # Create learning rate scheduler
@@ -365,10 +365,10 @@ def train_npt_equivalence(config_path: str = "config.yaml"):
             # Gradient accumulation
             if (step + 1) % config['training']['gradient_accumulation_steps'] == 0:
                 # Gradient clipping
-                if config['training']['max_grad_norm'] > 0:
+                if float(config['training']['max_grad_norm']) > 0:
                     accelerator.clip_grad_norm_(
                         model.get_trainable_parameters(),
-                        config['training']['max_grad_norm'],
+                        float(config['training']['max_grad_norm']),
                     )
                 
                 optimizer.step()

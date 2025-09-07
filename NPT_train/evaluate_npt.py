@@ -13,7 +13,7 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import json
 import os
 from datetime import datetime
@@ -449,8 +449,8 @@ def main():
     model = NPTModelWrapper(
         base_model_name=config['model']['base_model_name'],
         npt_layers=config['model']['npt_layers'],
-        rank=config['model']['rank'],
-        modulation_scale=config['model']['modulation_scale'],
+        rank=int(config['model']['rank']),
+        modulation_scale=float(config['model']['modulation_scale']),
     )
     model.load_npt_components(args.checkpoint)
     

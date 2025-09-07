@@ -65,28 +65,6 @@ class NeuroPlasticComponent(nn.Module):
         # We need to compute (batch, seq_len, rank) @ (rank, d_ffn) for each token
         # Result should be (batch, seq_len, d_model, d_ffn)
         
-        # First, we need to reconstruct the full delta_w
-        # We'll use einsum for clarity
-        delta_w = torch.einsum('bsr,rd,bsd->bsrd', 
-                               intermediate,  # (batch, seq_len, rank)
-                               self.B,        # (rank, d_ffn)
-                               attn_output)   # (batch, seq_len, d_model)
-        
-        # Actually, the above is wrong. Let me reconsider.
-        # The weight delta should be: ΔW = A @ (attn_output^T @ B)
-        # But this doesn't match dimensions properly.
-        
-        # Let's think about this differently:
-        # We want to modulate W_in which is (d_model, d_ffn)
-        # So ΔW should also be (d_model, d_ffn) for each token
-        
-        # Correct approach:
-        # For each token, we compute: ΔW = outer_product(attn @ A, B)
-        # But this would be rank-1. Let's use the standard LoRA approach:
-        
-        # ΔW = A @ B, but scaled by attention features
-        # We'll compute a scalar or vector modulation from attention
-        
         # Simpler approach: Use attention to compute scaling factors
         # Generate a rank-dimensional modulation vector for each token
         modulation = intermediate  # (batch, seq_len, rank)
@@ -130,10 +108,21 @@ class NPTLayer(nn.Module):
         super().__init__()
         
         # Store reference to original layer components
-        self.self_attn = original_layer.self_attn
+        # Handle different architectures
+        if hasattr(original_layer, 'self_attn'):
+            # LLaMA style
+            self.self_attn = original_layer.self_attn
+            self.input_layernorm = original_layer.input_layernorm
+            self.post_attention_layernorm = original_layer.post_attention_layernorm
+        elif hasattr(original_layer, 'attn'):
+            # GPT2 style
+            self.self_attn = original_layer.attn
+            self.input_layernorm = original_layer.ln_1
+            self.post_attention_layernorm = original_layer.ln_2
+        else:
+            raise ValueError("Unsupported attention architecture")
+        
         self.mlp = original_layer.mlp
-        self.input_layernorm = original_layer.input_layernorm
-        self.post_attention_layernorm = original_layer.post_attention_layernorm
         
         # Create the Neuro-Plastic Component
         self.np_component = NeuroPlasticComponent(
@@ -144,8 +133,18 @@ class NPTLayer(nn.Module):
         )
         
         # Store original MLP weights (frozen)
-        self.register_buffer('W_in_base', original_layer.mlp.gate_proj.weight.data.clone())
-        self.register_buffer('W_up_base', original_layer.mlp.up_proj.weight.data.clone())
+        # Handle different model architectures
+        if hasattr(original_layer.mlp, 'gate_proj'):
+            # LLaMA-style MLP
+            self.register_buffer('W_in_base', original_layer.mlp.gate_proj.weight.data.clone())
+            self.register_buffer('W_up_base', original_layer.mlp.up_proj.weight.data.clone())
+            self.mlp_type = 'llama'
+        elif hasattr(original_layer.mlp, 'c_fc'):
+            # GPT2-style MLP
+            self.register_buffer('W_in_base', original_layer.mlp.c_fc.weight.data.clone())
+            self.mlp_type = 'gpt2'
+        else:
+            raise ValueError(f"Unsupported MLP architecture")
         
     def forward(
         self,
@@ -198,14 +197,21 @@ class NPTLayer(nn.Module):
             for s in range(seq_len):
                 h = hidden_states[b, s]  # (d_model,)
                 
-                # Modulate gate weights
-                W_gate_modulated = self.W_in_base + delta_w[b, s].T  # (d_ffn, d_model)
+                # Modulate first layer weights
+                W_in_modulated = self.W_in_base + delta_w[b, s].T  # (d_ffn, d_model)
                 
-                # Apply modulated MLP
-                gate = F.silu(F.linear(h, W_gate_modulated))
-                up = F.linear(h, self.W_up_base)
-                intermediate = gate * up
-                output = self.mlp.down_proj(intermediate)
+                # Apply modulated MLP based on architecture
+                if self.mlp_type == 'llama':
+                    # LLaMA-style: gate and up projections
+                    gate = F.silu(F.linear(h, W_in_modulated))
+                    up = F.linear(h, self.W_up_base)
+                    intermediate = gate * up
+                    output = self.mlp.down_proj(intermediate)
+                else:  # GPT2
+                    # GPT2-style: single projection with GELU
+                    intermediate = F.gelu(F.linear(h, W_in_modulated))
+                    output = self.mlp.c_proj(intermediate)
+                
                 outputs.append(output)
         
         # Stack outputs

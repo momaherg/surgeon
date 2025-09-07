@@ -30,6 +30,10 @@ class NPTModelWrapper(nn.Module):
     ):
         super().__init__()
         
+        # Ensure proper types
+        rank = int(rank)
+        modulation_scale = float(modulation_scale)
+        
         # Load base model and config
         self.config = AutoConfig.from_pretrained(base_model_name, cache_dir=cache_dir)
         self.base_model = AutoModelForCausalLM.from_pretrained(
@@ -48,7 +52,15 @@ class NPTModelWrapper(nn.Module):
         
         # Get model dimensions
         self.d_model = self.config.hidden_size
-        self.d_ffn = self.config.intermediate_size
+        
+        # Get feed-forward dimension (different for different architectures)
+        if hasattr(self.config, 'intermediate_size'):
+            self.d_ffn = self.config.intermediate_size  # LLaMA, BERT, etc.
+        elif hasattr(self.config, 'n_inner'):
+            self.d_ffn = self.config.n_inner if self.config.n_inner is not None else 4 * self.config.hidden_size  # GPT2
+        else:
+            # Default to 4x hidden size if not specified
+            self.d_ffn = 4 * self.config.hidden_size
         
         # Convert specified layers to NPT layers
         self._convert_layers_to_npt(rank, modulation_scale)
