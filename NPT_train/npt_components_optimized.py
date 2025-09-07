@@ -97,8 +97,10 @@ class NeuroPlasticComponentOptimized(nn.Module):
         if self.use_cpu_offload:
             # Offload computation to CPU to save GPU memory
             self._ensure_cpu_copies()
-            token_mod_cpu = token_mod.cpu()
-            hidden_state_cpu = hidden_state.cpu()
+            
+            # Convert to float32 for CPU computation
+            token_mod_cpu = token_mod.cpu().float()
+            hidden_state_cpu = hidden_state.cpu().float()
             
             # Compute on CPU: h @ A @ diag(mod) @ B
             # More efficient: (h @ A) * mod @ B
@@ -106,7 +108,7 @@ class NeuroPlasticComponentOptimized(nn.Module):
             h_A_mod = h_A * token_mod_cpu  # (batch, rank)
             output = h_A_mod @ self.B_cpu  # (batch, d_ffn)
             
-            # Move back to GPU
+            # Move back to GPU and restore original dtype
             return output.to(hidden_state.device).to(hidden_state.dtype)
         else:
             # GPU computation with mixed precision
@@ -129,7 +131,7 @@ class NeuroPlasticComponentOptimized(nn.Module):
         if self.use_cpu_offload:
             # Compute on CPU
             self._ensure_cpu_copies()
-            token_mod = modulation[:, token_idx, :].cpu()  # (batch, rank)
+            token_mod = modulation[:, token_idx, :].cpu().float()  # (batch, rank) - convert to float32
             
             token_mod_expanded = token_mod.unsqueeze(1)  # (batch, 1, rank)
             A_expanded = self.A_cpu.unsqueeze(0)  # (1, d_model, rank)
@@ -137,7 +139,7 @@ class NeuroPlasticComponentOptimized(nn.Module):
             A_modulated = A_expanded * token_mod_expanded  # (batch, d_model, rank)
             delta_w = A_modulated @ self.B_cpu  # (batch, d_model, d_ffn)
             
-            return delta_w.to(modulation.device)
+            return delta_w.to(modulation.device).to(modulation.dtype)
         else:
             # Original GPU computation
             token_mod = modulation[:, token_idx, :]  # (batch, rank)
