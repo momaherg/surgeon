@@ -38,6 +38,19 @@ from utils import (
 from improved_loss import create_improved_loss
 
 
+def clip_loss(loss, max_value=10.0, name="loss"):
+    """Clip loss values to prevent instability."""
+    if torch.isnan(loss):
+        logging.warning(f"NaN {name} detected, returning small value")
+        return torch.tensor(0.1, device=loss.device, requires_grad=True)
+    
+    if loss > max_value:
+        logging.warning(f"Clipping {name} from {loss.item():.2f} to {max_value}")
+        return torch.clamp(loss, max=max_value)
+    
+    return loss
+
+
 class MixedTeacherForcingNPTTrainer:
     """NPT Trainer with mixed teacher forcing and curriculum learning."""
     
@@ -364,6 +377,10 @@ class MixedTeacherForcingNPTTrainer:
             self.args.logits_loss_weight * logits_loss
         )
         
+        # Clip losses to prevent instability
+        total_loss = clip_loss(total_loss, max_value=10.0, name="teacher_total_loss")
+        logits_loss = clip_loss(logits_loss, max_value=5.0, name="teacher_logits_loss")
+        
         return {
             'total_loss': total_loss,
             'hidden_loss': hidden_loss_dict['total_loss'],
@@ -477,6 +494,10 @@ class MixedTeacherForcingNPTTrainer:
             self.args.hidden_loss_weight * hidden_loss_dict['total_loss'] +
             self.args.logits_loss_weight * logits_loss * 2.0  # Double weight for student-guided
         )
+        
+        # Clip losses to prevent instability (more aggressive for student-guided)
+        total_loss = clip_loss(total_loss, max_value=5.0, name="student_total_loss")
+        logits_loss = clip_loss(logits_loss, max_value=3.0, name="student_logits_loss")
         
         return {
             'total_loss': total_loss,
