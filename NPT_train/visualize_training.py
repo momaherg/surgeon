@@ -145,9 +145,18 @@ def plot_weight_delta_distribution(
             # Random attention output
             attn_output = torch.randn(batch_size, seq_len, d_model)
             
-            # Get weight delta
-            delta_w = npt_layer.np_component(attn_output)
-            delta_flat = delta_w.numpy().flatten()
+            # Get modulation factors
+            modulation = npt_layer.np_component(attn_output)
+            
+            # Sample a few tokens and compute their weight deltas
+            num_token_samples = min(5, seq_len)
+            token_deltas = []
+            for token_idx in range(num_token_samples):
+                delta_w = npt_layer.np_component.compute_weight_delta(modulation, token_idx)
+                token_deltas.append(delta_w.cpu().numpy())
+            
+            # Flatten and store
+            delta_flat = np.concatenate([d.flatten() for d in token_deltas])
             
             all_deltas.append(delta_flat)
             layer_deltas[f"Layer {idx_str}"] = delta_flat

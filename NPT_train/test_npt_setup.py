@@ -38,11 +38,16 @@ def test_npt_component():
         # Test forward pass
         batch_size, seq_len = 2, 10
         attn_output = torch.randn(batch_size, seq_len, d_model)
-        delta_w = np_component(attn_output)
+        modulation = np_component(attn_output)
         
-        # Check output shape
-        expected_shape = (batch_size, seq_len, d_model, d_ffn)
-        assert delta_w.shape == expected_shape, f"Wrong shape: {delta_w.shape} != {expected_shape}"
+        # Check modulation shape
+        expected_shape = (batch_size, seq_len, rank)
+        assert modulation.shape == expected_shape, f"Wrong shape: {modulation.shape} != {expected_shape}"
+        
+        # Test weight delta computation for a single token
+        delta_w = np_component.compute_weight_delta(modulation, token_idx=0)
+        expected_delta_shape = (batch_size, d_model, d_ffn)
+        assert delta_w.shape == expected_delta_shape, f"Wrong delta shape: {delta_w.shape} != {expected_delta_shape}"
         
         # Check magnitude
         delta_norm = torch.norm(delta_w, p='fro', dim=(-2, -1)).mean()

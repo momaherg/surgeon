@@ -195,6 +195,10 @@ class NPTLayer(nn.Module):
         """
         NPT forward pass with dynamic weight modulation.
         """
+        # Handle the case where hidden_states might be a tuple
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+            
         residual = hidden_states
         
         # Self-attention
@@ -290,6 +294,10 @@ class NPTLayer(nn.Module):
         """
         Original transformer layer forward pass for comparison.
         """
+        # Handle the case where hidden_states might be a tuple
+        if isinstance(hidden_states, tuple):
+            hidden_states = hidden_states[0]
+            
         residual = hidden_states
         
         # Self-attention
