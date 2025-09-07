@@ -1,5 +1,9 @@
 """
-NPT pretraining with improved loss functions for better convergence.
+NPT pretraining with teacher-guided layer inputs to prevent error propagation.
+
+This implementation ensures each NPT layer receives the same input as its 
+corresponding teacher layer during training, preventing the exponential 
+error growth observed in standard sequential processing.
 """
 
 import os
@@ -33,8 +37,8 @@ from utils import (
 from improved_loss import create_improved_loss
 
 
-class ImprovedEquivalenceTrainer:
-    """Trainer with improved loss functions for better convergence."""
+class TeacherGuidedNPTTrainer:
+    """Trainer with teacher-guided layer inputs to prevent error propagation."""
     
     def __init__(self, args):
         self.args = args
@@ -61,7 +65,7 @@ class ImprovedEquivalenceTrainer:
         self.metrics_logger = MetricsLogger(
             use_wandb=args.use_wandb,
             use_tensorboard=args.use_tensorboard,
-            project_name="npt-improved-pretraining",
+            project_name="npt-teacher-guided-pretraining",
             run_name=args.run_name,
             config=vars(args)
         )
@@ -281,8 +285,13 @@ class ImprovedEquivalenceTrainer:
         if self.loss_params:
             self.loss_fn = self.accelerator.prepare(self.loss_fn)
     
-    def compute_hidden_states_and_loss(self, batch):
-        """Compute hidden states and loss using improved loss function."""
+    def compute_teacher_guided_loss(self, batch):
+        """
+        Compute loss with teacher-guided layer inputs to prevent error propagation.
+        
+        Key innovation: Each NPT layer receives the same input as its corresponding
+        teacher layer, preventing cascading errors through the network.
+        """
         # Move batch to device
         input_ids = batch['input_ids']
         attention_mask = batch['attention_mask']
@@ -299,7 +308,7 @@ class ImprovedEquivalenceTrainer:
             attention_mask = attention_mask.to(dtype=target_dtype)
         
         try:
-            # Teacher forward pass (no grad)
+            # Teacher forward pass (no grad) - get all hidden states
             with torch.no_grad():
                 teacher_outputs = self.teacher_model(
                     input_ids=input_ids,
@@ -307,14 +316,6 @@ class ImprovedEquivalenceTrainer:
                     output_hidden_states=True
                 )
                 teacher_hidden_states = teacher_outputs.hidden_states
-            
-            # Student forward pass - manually go through layers for NPT
-            all_hidden_states = []
-            reg_norms = []
-            
-            # Get embeddings
-            hidden_states = self.student_model.model.embed_tokens(input_ids)
-            all_hidden_states.append(hidden_states)
             
             # Get batch size and sequence length
             batch_size, seq_length = input_ids.shape
@@ -328,14 +329,26 @@ class ImprovedEquivalenceTrainer:
             position_embeddings = None
             if hasattr(self.student_model.model, 'rotary_emb'):
                 # For newer Llama models
-                cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
+                cos, sin = self.student_model.model.rotary_emb(teacher_hidden_states[0], position_ids)
                 position_embeddings = (cos, sin)
             
-            # Pass through layers
+            # Process each layer with teacher-guided inputs
+            all_student_hidden_states = []
+            reg_norms = []
+            
+            # Start with embeddings (should be identical if sharing embeddings)
+            all_student_hidden_states.append(teacher_hidden_states[0])
+            
+            # Process each layer independently with teacher inputs
             for i, layer in enumerate(self.student_model.model.layers):
-                # Forward through NPT layer
+                # CRITICAL: Use teacher hidden states as input to prevent error propagation
+                # This ensures each layer learns the correct transformation independently
+                teacher_input = teacher_hidden_states[i]  # Input to layer i
+                teacher_output = teacher_hidden_states[i + 1]  # Expected output from layer i
+                
+                # Forward through NPT layer with teacher input
                 layer_outputs = layer(
-                    hidden_states,
+                    teacher_input,  # Use teacher input instead of previous layer output
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     position_embeddings=position_embeddings
@@ -343,25 +356,35 @@ class ImprovedEquivalenceTrainer:
                 
                 # Handle different output formats
                 if isinstance(layer_outputs, tuple):
-                    hidden_states = layer_outputs[0]
+                    student_output = layer_outputs[0]
                     # Collect regularization if available
                     if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
                         reg_norms.append(layer_outputs[1])
                 else:
-                    hidden_states = layer_outputs
+                    student_output = layer_outputs
                 
-                all_hidden_states.append(hidden_states)
+                all_student_hidden_states.append(student_output)
             
-            # Apply final layer norm
-            hidden_states = self.student_model.model.norm(hidden_states)
+            # Apply final layer norm to last hidden state
+            # Use teacher's last hidden state as input
+            final_hidden_states = self.student_model.model.norm(teacher_hidden_states[-2])
             
             # Use improved loss function
             loss_dict = self.loss_fn(
-                teacher_hidden_states=teacher_hidden_states,
-                student_hidden_states=all_hidden_states,
+                teacher_hidden_states=teacher_hidden_states[:-1],  # Exclude final norm output
+                student_hidden_states=all_student_hidden_states,
                 reg_norms=reg_norms,
                 step=self.global_step
             )
+            
+            # Add additional logging for last layer MSE
+            if self.global_step % self.args.log_steps == 0:
+                # Compute last layer MSE specifically
+                last_layer_mse = F.mse_loss(
+                    all_student_hidden_states[-1], 
+                    teacher_hidden_states[-2]  # Before final norm
+                ).item()
+                loss_dict['last_layer_mse'] = last_layer_mse
             
             return loss_dict
             
@@ -378,14 +401,15 @@ class ImprovedEquivalenceTrainer:
                 'mse_loss': torch.tensor(1e-4, device=device, requires_grad=True),
                 'cosine_loss': torch.tensor(0.0, device=device, requires_grad=True),
                 'reg_loss': torch.tensor(1e-6, device=device, requires_grad=True),
-                'grad_penalty': torch.tensor(0.0, device=device, requires_grad=True)
+                'grad_penalty': torch.tensor(0.0, device=device, requires_grad=True),
+                'last_layer_mse': 0.0
             }
     
     def train_step(self, batch):
         """Perform a single training step with safety checks."""
         try:
-            # Compute losses
-            loss_dict = self.compute_hidden_states_and_loss(batch)
+            # Compute losses with teacher-guided inputs
+            loss_dict = self.compute_teacher_guided_loss(batch)
             total_loss = loss_dict['total_loss']
             
             # Check for NaN
@@ -429,6 +453,7 @@ class ImprovedEquivalenceTrainer:
                 'loss/cosine': loss_dict.get('cosine_loss', 0.0).item(),
                 'loss/regularization': loss_dict.get('reg_loss', 0.0).item(),
                 'loss/grad_penalty': loss_dict.get('grad_penalty', 0.0).item(),
+                'loss/last_layer_mse': loss_dict.get('last_layer_mse', 0.0),
                 'training/learning_rate': self.scheduler.get_last_lr()[0],
                 'training/grad_norm': grad_norm,
                 'training/curriculum_factor': loss_dict.get('curriculum_factor', 1.0),
@@ -446,7 +471,8 @@ class ImprovedEquivalenceTrainer:
     
     def train(self):
         """Main training loop with safety checks."""
-        self.logger.info("Starting improved equivalence pre-training...")
+        self.logger.info("Starting teacher-guided NPT training...")
+        self.logger.info("Key innovation: Each layer receives teacher inputs to prevent error propagation")
         
         best_loss = float('inf')
         consecutive_errors = 0
@@ -459,7 +485,8 @@ class ImprovedEquivalenceTrainer:
                 'loss/total': 0.0,
                 'loss/mse': 0.0,
                 'loss/cosine': 0.0,
-                'loss/regularization': 0.0
+                'loss/regularization': 0.0,
+                'loss/last_layer_mse': 0.0
             }
             valid_steps = 0
             
@@ -494,11 +521,11 @@ class ImprovedEquivalenceTrainer:
                 if self.global_step % self.args.log_steps == 0:
                     self.metrics_logger.log(metrics, step=self.global_step)
                     
-                    # Update progress bar
+                    # Update progress bar with last layer MSE
                     progress_bar.set_postfix({
                         'loss': f"{metrics['loss/total']:.4f}",
                         'mse': f"{metrics['loss/mse']:.4f}",
-                        'cos': f"{metrics['loss/cosine']:.4f}",
+                        'last_layer': f"{metrics['loss/last_layer_mse']:.4f}",
                         'reg': f"{metrics['loss/regularization']:.4f}"
                     })
                 
@@ -526,6 +553,7 @@ class ImprovedEquivalenceTrainer:
                     f"Epoch {epoch + 1} - "
                     f"Loss: {epoch_metrics['loss/total']:.4f}, "
                     f"MSE: {epoch_metrics['loss/mse']:.4f}, "
+                    f"Last Layer MSE: {epoch_metrics['loss/last_layer_mse']:.4f}, "
                     f"Cosine: {epoch_metrics['loss/cosine']:.4f}, "
                     f"Reg: {epoch_metrics['loss/regularization']:.4f} "
                     f"(Valid steps: {valid_steps})"
@@ -656,8 +684,11 @@ class ImprovedEquivalenceTrainer:
             }, step=self.global_step)
     
     def compute_hidden_state_differences(self, num_samples=5):
-        """Compute differences between teacher and student hidden states."""
-        self.logger.info("Computing hidden state differences...")
+        """
+        Compute differences between teacher and student hidden states.
+        Now uses actual inference (not teacher-guided) to measure real performance.
+        """
+        self.logger.info("Computing hidden state differences (real inference mode)...")
         
         # Set models to eval mode
         self.student_model.eval()
@@ -692,7 +723,7 @@ class ImprovedEquivalenceTrainer:
                     )
                     teacher_hidden = teacher_outputs.hidden_states
                     
-                    # Get student hidden states manually through layers
+                    # Get student hidden states through ACTUAL inference (not teacher-guided)
                     student_hidden = []
                     hidden_states = self.student_model.model.embed_tokens(input_ids)
                     student_hidden.append(hidden_states)
@@ -709,7 +740,7 @@ class ImprovedEquivalenceTrainer:
                         cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
                         position_embeddings = (cos, sin)
                     
-                    # Pass through layers
+                    # Pass through layers (actual inference, not teacher-guided)
                     for layer in self.student_model.model.layers:
                         layer_outputs = layer(
                             hidden_states,
@@ -759,7 +790,7 @@ class ImprovedEquivalenceTrainer:
             avg_mse = sum(all_mse_diffs) / len(all_mse_diffs)
             avg_cosine = sum(all_cosine_sims) / len(all_cosine_sims)
             
-            self.logger.info(f"\n{'='*60}\nStep {self.global_step} - Hidden State Differences:\n{'='*60}")
+            self.logger.info(f"\n{'='*60}\nStep {self.global_step} - Hidden State Differences (Real Inference):\n{'='*60}")
             self.logger.info(f"Average MSE difference (last layer): {avg_mse:.6f}")
             self.logger.info(f"Average cosine similarity (last layer): {avg_cosine:.6f}")
             
@@ -794,7 +825,7 @@ class ImprovedEquivalenceTrainer:
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="NPT Equivalence Pre-training with Improved Loss Functions"
+        description="NPT Teacher-Guided Pre-training to Prevent Error Propagation"
     )
     
     # Model arguments
@@ -1005,7 +1036,7 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="./outputs/npt-improved-pretrained",
+        default="./outputs/npt-teacher-guided",
         help="Output directory for checkpoints"
     )
     parser.add_argument(
@@ -1079,7 +1110,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Initialize trainer
-    trainer = ImprovedEquivalenceTrainer(args)
+    trainer = TeacherGuidedNPTTrainer(args)
     
     # Start training
     trainer.train()
@@ -1087,4 +1118,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
