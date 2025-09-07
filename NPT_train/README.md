@@ -19,6 +19,12 @@ The NPT architecture replaces standard additive residual connections with a **Ne
 - CUDA-capable GPU (recommended: 24GB+ VRAM for 7B models)
 - 32GB+ system RAM
 
+## ⚠️ Important: Memory Optimization Update
+
+The NPT implementation has been optimized to handle large language models efficiently. The original approach would have required ~448GB of memory for weight deltas, but the optimized version uses <1GB by computing deltas on-demand. 
+
+**New:** We've added further optimizations including CPU offloading and mixed precision training to handle persistent OOM issues with 80GB GPUs. See [MEMORY_OPTIMIZATION.md](MEMORY_OPTIMIZATION.md) for details.
+
 ## 🚀 Quick Start
 
 ### 1. Installation
@@ -54,12 +60,25 @@ training:
 
 ### 3. Launch Training
 
+#### Option A: Standard Training
 ```bash
 # Use the provided launcher script
 ./launch_training.sh
 
 # Or run directly with accelerate
 accelerate launch train_npt_equivalence.py --config config.yaml
+```
+
+#### Option B: Memory-Optimized Training (Recommended for Large Models)
+```bash
+# For small model testing
+./launch_optimized.sh small
+
+# For large models with all optimizations
+./launch_optimized.sh optimized
+
+# Or run directly
+python3 train_npt_optimized.py --config config_optimized.yaml
 ```
 
 ## 🏗️ Architecture
@@ -83,14 +102,35 @@ accelerate launch train_npt_equivalence.py --config config.yaml
 
 ```
 NPT_train/
-├── config.yaml              # Training configuration
-├── requirements.txt         # Python dependencies
-├── launch_training.sh       # Training launcher script
-├── npt_components.py        # Core NPT components (NP Component, NPTLayer)
-├── npt_model.py            # NPT model wrapper
-├── train_npt_equivalence.py # Main training script
-├── evaluate_npt.py         # Evaluation utilities
-└── README.md               # This file
+├── Core Implementation:
+│   ├── npt_components.py         # Core NPT components 
+│   ├── npt_model.py             # NPT model wrapper
+│   └── train_npt_equivalence.py # Main training script
+│
+├── Optimized Implementation:
+│   ├── npt_components_optimized.py  # Memory-efficient components
+│   ├── npt_model_optimized.py      # Optimized model wrapper
+│   └── train_npt_optimized.py      # Optimized training script
+│
+├── Configuration Files:
+│   ├── config.yaml              # Standard configuration
+│   ├── config_optimized.yaml    # Optimized for large models
+│   └── config_small.yaml        # For testing with small models
+│
+├── Launch Scripts:
+│   ├── launch_training.sh       # Standard launcher
+│   └── launch_optimized.sh      # Optimized launcher
+│
+├── Utilities:
+│   ├── evaluate_npt.py          # Evaluation utilities
+│   ├── test_npt_setup.py        # Setup verification
+│   ├── memory_efficiency_test.py # Memory usage analysis
+│   └── visualize_training.py    # Training visualization
+│
+├── Documentation:
+│   ├── README.md                # This file
+│   ├── MEMORY_OPTIMIZATION.md   # Memory optimization guide
+│   └── requirements.txt         # Python dependencies
 ```
 
 ## 🔧 Configuration Options
@@ -147,9 +187,13 @@ Upon successful Phase 1 completion:
 ### Common Issues
 
 1. **Out of Memory**:
-   - Reduce `batch_size` in config.yaml
-   - Use gradient checkpointing (if implemented)
-   - Convert fewer layers
+   - The implementation has been optimized to avoid the 448GB memory issue
+   - If you still encounter OOM:
+     - Reduce `batch_size` in config.yaml (default is now 1)
+     - Reduce `max_length` from 512 to 256
+     - Reduce `rank` from 16 to 8
+     - Convert fewer layers
+   - Run `python3 memory_efficiency_test.py` to verify memory usage
 
 2. **High Equivalence Loss**:
    - Increase `num_epochs`

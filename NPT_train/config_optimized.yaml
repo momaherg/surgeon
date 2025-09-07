@@ -1,0 +1,48 @@
+# NPT Training Configuration - Optimized for Large Models
+model:
+  base_model_name: "meta-llama/Llama-3.1-8B"
+  npt_layers: [16, 17, 18, 19]  # Only convert 4 layers to save memory
+  rank: 8  # Reduced rank for memory efficiency
+  modulation_scale: 0.1
+  
+training:
+  batch_size: 1
+  gradient_accumulation_steps: 32
+  learning_rate: 0.0001  # 1e-4
+  num_epochs: 1  # Reduced for testing
+  warmup_steps: 100
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  
+  # Loss weights
+  equivalence_weight: 1.0
+  regularization_weight: 0.01
+  
+  # Logging
+  logging_steps: 10
+  prediction_logging_steps: 50
+  eval_steps: 100
+  save_steps: 200
+  
+data:
+  dataset_name: "wikitext"
+  dataset_config: "wikitext-103-v1"
+  max_length: 256  # Reduced sequence length
+  num_train_samples: 1000
+  num_eval_samples: 100
+  
+wandb:
+  enabled: false  # Disable for testing
+  project: "npt-equivalence-pretraining"
+  entity: null
+  tags: ["npt", "phase1", "optimized", "llama8b"]
+  
+optimization:
+  use_cpu_offload: true  # Offload weight delta computation to CPU
+  use_8bit: false  # Set to true if you have bitsandbytes installed
+  mixed_precision: "fp16"  # Use fp16 for memory efficiency
+  
+paths:
+  output_dir: "./outputs"
+  cache_dir: "./cache"
+  checkpoint_dir: "./checkpoints"
