@@ -404,23 +404,60 @@ class MixedTeacherForcingNPTTrainer:
             teacher_logits = teacher_outputs.logits
         
         # Student forward pass (actual inference)
-        student_outputs = self.student_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            output_hidden_states=True
-        )
-        student_hidden_states = student_outputs.hidden_states
-        student_logits = student_outputs.logits
+        # We need to manually process through layers to handle tuple outputs
+        batch_size, seq_length = input_ids.shape
+        device = input_ids.device
         
-        # Collect regularization norms
+        # Get embeddings
+        hidden_states = self.student_model.model.embed_tokens(input_ids)
+        
+        # Create position_ids
+        position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+        position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+        
+        # Get position embeddings if available
+        position_embeddings = None
+        if hasattr(self.student_model.model, 'rotary_emb'):
+            cos, sin = self.student_model.model.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (cos, sin)
+        
+        # Collect all hidden states and regularization norms
+        all_hidden_states = [hidden_states]
         reg_norms = []
+        
+        # Process through each layer
         for layer in self.student_model.model.layers:
-            if hasattr(layer, 'adapter'):
-                # Dummy forward to get reg norm
-                with torch.no_grad():
-                    adapter_out = layer.adapter(student_hidden_states[0])
-                    if 'reg_norm' in adapter_out:
-                        reg_norms.append(adapter_out['reg_norm'])
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                position_embeddings=position_embeddings
+            )
+            
+            # Handle tuple outputs during training
+            if isinstance(layer_outputs, tuple):
+                hidden_states = layer_outputs[0]
+                # Collect regularization norm if available
+                if len(layer_outputs) > 1 and isinstance(layer_outputs[1], torch.Tensor):
+                    reg_norms.append(layer_outputs[1])
+            else:
+                hidden_states = layer_outputs
+                
+            all_hidden_states.append(hidden_states)
+        
+        # Apply final layer norm
+        hidden_states = self.student_model.model.norm(hidden_states)
+        all_hidden_states.append(hidden_states)
+        
+        # Get logits
+        student_logits = self.student_model.lm_head(hidden_states)
+        
+        # Store for loss computation
+        student_hidden_states = all_hidden_states
+        
+        # If we didn't collect enough reg norms, pad with zeros
+        while len(reg_norms) < len(self.student_model.model.layers):
+            reg_norms.append(torch.tensor(0.0, device=device, requires_grad=True))
         
         # Compute hidden state loss
         hidden_loss_dict = self.hidden_loss_fn(
