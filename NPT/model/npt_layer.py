@@ -239,6 +239,7 @@ class NPTLayer(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         return_modulation: bool = False,
+        teacher_attn_output: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Union[Tuple[torch.Tensor, ...], Dict[str, torch.Tensor]]:
         """
@@ -246,6 +247,7 @@ class NPTLayer(nn.Module):
         
         Args:
             return_modulation: If True, return modulation values for permanent updates
+            teacher_attn_output: Optional teacher attention output for training (teacher forcing)
         """
         # Store original input for final residual
         original_input = hidden_states
@@ -302,7 +304,15 @@ class NPTLayer(nn.Module):
         attn_output = attn_outputs[0]
         
         # NPT: Generate modulation from attention (NO residual here!)
-        modulation = self.adapter(attn_output)
+        # Use teacher attention output if provided (during training)
+        if teacher_attn_output is not None:
+            # Teacher forcing for attention: adapter learns from correct attention patterns
+            adapter_input = teacher_attn_output
+        else:
+            # Normal operation: use NPT's own attention output
+            adapter_input = attn_output
+            
+        modulation = self.adapter(adapter_input)
         
         # MLP with weight modulation
         # Use original input for MLP computation (not attention output)

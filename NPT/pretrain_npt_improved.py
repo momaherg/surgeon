@@ -299,14 +299,62 @@ class ImprovedEquivalenceTrainer:
             attention_mask = attention_mask.to(dtype=target_dtype)
         
         try:
-            # Teacher forward pass (no grad)
+            # Get batch size and sequence length
+            batch_size, seq_length = input_ids.shape
+            device = input_ids.device
+            
+            # Create position_ids
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
+            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
+            
+            # Teacher forward pass (no grad) - need to manually go through layers to get attention outputs
             with torch.no_grad():
+                # First get all hidden states with standard forward pass
                 teacher_outputs = self.teacher_model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     output_hidden_states=True
                 )
                 teacher_hidden_states = teacher_outputs.hidden_states
+                
+                # Now manually go through teacher layers to collect attention outputs
+                teacher_attn_outputs = []
+                teacher_hidden = self.teacher_model.model.embed_tokens(input_ids)
+                
+                # Teacher position embeddings
+                teacher_position_embeddings = None
+                if hasattr(self.teacher_model.model, 'rotary_emb'):
+                    cos, sin = self.teacher_model.model.rotary_emb(teacher_hidden, position_ids)
+                    teacher_position_embeddings = (cos, sin)
+                
+                # Go through each teacher layer to get attention outputs
+                for teacher_layer in self.teacher_model.model.layers:
+                    # Apply layer norm
+                    normed_hidden = teacher_layer.input_layernorm(teacher_hidden)
+                    
+                    # Get attention output (before residual)
+                    attn_kwargs = {
+                        'hidden_states': normed_hidden,
+                        'attention_mask': attention_mask,
+                        'position_ids': position_ids,
+                    }
+                    if teacher_position_embeddings is not None:
+                        attn_kwargs['position_embeddings'] = teacher_position_embeddings
+                    
+                    teacher_attn_out = teacher_layer.self_attn(**attn_kwargs)[0]
+                    teacher_attn_outputs.append(teacher_attn_out)
+                    
+                    # Get the full layer output for next iteration
+                    layer_out = teacher_layer(
+                        teacher_hidden,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        position_embeddings=teacher_position_embeddings
+                    )
+                    if isinstance(layer_out, tuple):
+                        teacher_hidden = layer_out[0]
+                    else:
+                        teacher_hidden = layer_out
             
             # Student forward pass - manually go through layers for NPT
             all_hidden_states = []
@@ -315,14 +363,6 @@ class ImprovedEquivalenceTrainer:
             # Get embeddings
             hidden_states = self.student_model.model.embed_tokens(input_ids)
             all_hidden_states.append(hidden_states)
-            
-            # Get batch size and sequence length
-            batch_size, seq_length = input_ids.shape
-            device = input_ids.device
-            
-            # Create position_ids
-            position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
-            position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
             
             # Check if the model has rotary embeddings
             position_embeddings = None
@@ -348,12 +388,13 @@ class ImprovedEquivalenceTrainer:
                     cos, sin = self.student_model.model.rotary_emb(layer_input, position_ids)
                     position_embeddings = (cos, sin)
                 
-                # Forward through NPT layer with teacher-forced input
+                # Forward through NPT layer with teacher-forced input AND attention
                 layer_outputs = layer(
                     layer_input,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    position_embeddings=position_embeddings
+                    position_embeddings=position_embeddings,
+                    teacher_attn_output=teacher_attn_outputs[i]  # Teacher forcing for attention too!
                 )
                 
                 # Handle different output formats
