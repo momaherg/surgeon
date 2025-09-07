@@ -1,6 +1,6 @@
 # NPT Training Configuration
 model:
-  base_model_name: "meta-llama/Llama-2-7b-hf"  # Can be changed to Llama-3.1-8B
+  base_model_name: "meta-llama/Llama-3.1-8B"  # Can be changed to Llama-3.1-8B
   npt_layers: "upper_half"  # Options: "all", "upper_half", "lower_half", or list of layer indices
   rank: 16  # Rank for low-rank adapters (A and B matrices)
   modulation_scale: 0.1  # Scaling factor for weight deltas
