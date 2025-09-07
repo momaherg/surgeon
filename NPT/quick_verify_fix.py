@@ -78,12 +78,19 @@ except Exception as e:
         position_ids = torch.arange(seq_length, dtype=torch.long, device=device)
         position_ids = position_ids.unsqueeze(0).expand(batch_size, -1)
         
+        # Get position embeddings if available
+        position_embeddings = None
+        if hasattr(npt_model.model, 'rotary_emb'):
+            cos, sin = npt_model.model.rotary_emb(hidden_states, position_ids)
+            position_embeddings = (cos, sin)
+        
         # Process through layers
         for i, layer in enumerate(npt_model.model.layers):
             layer_outputs = layer(
                 hidden_states,
                 attention_mask=attention_mask,
-                position_ids=position_ids
+                position_ids=position_ids,
+                position_embeddings=position_embeddings
             )
             
             # Handle tuple outputs
