@@ -62,7 +62,17 @@ class NPTModelWrapperOptimized(nn.Module):
         
         # Get model dimensions
         self.d_model = self.config.hidden_size
-        self.d_ffn = self.config.intermediate_size
+        
+        # Handle different model architectures
+        if hasattr(self.config, 'intermediate_size'):
+            # LLaMA, etc.
+            self.d_ffn = self.config.intermediate_size
+        elif hasattr(self.config, 'n_inner'):
+            # GPT2 with explicit inner dimension
+            self.d_ffn = self.config.n_inner if self.config.n_inner is not None else 4 * self.config.hidden_size
+        else:
+            # GPT2 default: 4 * hidden_size
+            self.d_ffn = 4 * self.config.hidden_size
         
         # Convert specified layers to NPT layers
         self._convert_layers_to_npt_optimized(
@@ -72,8 +82,7 @@ class NPTModelWrapperOptimized(nn.Module):
             dtype=torch_dtype,
         )
         
-        # Store original forward method
-        self._original_forward = self.base_model.forward
+        # We don't store the forward method as it can cause recursion with accelerate
         
     def _parse_layer_indices(self, npt_layers: Union[str, List[int]]) -> List[int]:
         """Parse layer specification into list of indices."""
@@ -139,8 +148,8 @@ class NPTModelWrapperOptimized(nn.Module):
         if 'output_hidden_states' not in kwargs:
             kwargs['output_hidden_states'] = True
         
-        # NPT forward pass
-        npt_outputs = self._original_forward(
+        # NPT forward pass - call base model directly to avoid recursion
+        npt_outputs = self.base_model.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
             **kwargs,

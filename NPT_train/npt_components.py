@@ -257,11 +257,19 @@ class NPTLayer(nn.Module):
                     intermediate = gate * up
                     output = self.mlp.down_proj(intermediate)  # (batch, d_model)
                 else:  # GPT2
-                    # Modulate c_fc weights
-                    W_fc_modulated = self.W_in_base.unsqueeze(0) + delta_w.transpose(-2, -1)  # (batch, d_ffn, d_model)
+                    # For GPT2, weights are stored as (d_model, d_ffn), not (d_ffn, d_model)
+                    # So we don't need to transpose delta_w
+                    # delta_w has shape (batch, d_model, d_ffn)
+                    # W_in_base has shape (d_model, d_ffn)
                     
-                    # Compute activation for all batches at once
-                    intermediate = F.gelu(torch.bmm(W_fc_modulated, h.unsqueeze(-1)).squeeze(-1))  # (batch, d_ffn)
+                    # Use F.linear which handles the weight correctly
+                    base_output = F.linear(h, self.W_in_base)  # (batch, d_ffn)
+                    
+                    # Compute modulated output efficiently
+                    # delta_w @ h gives the modulation term
+                    delta_output = torch.bmm(delta_w.transpose(-2, -1), h.unsqueeze(-1)).squeeze(-1)  # (batch, d_ffn)
+                    
+                    intermediate = F.gelu(base_output + delta_output)
                     
                     # Output projection
                     output = self.mlp.c_proj(intermediate)  # (batch, d_model)

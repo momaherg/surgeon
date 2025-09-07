@@ -65,8 +65,7 @@ class NPTModelWrapper(nn.Module):
         # Convert specified layers to NPT layers
         self._convert_layers_to_npt(rank, modulation_scale)
         
-        # Store original forward method
-        self._original_forward = self.base_model.forward
+        # We don't store the forward method as it can cause recursion with accelerate
         
     def _parse_layer_indices(self, npt_layers: Union[str, List[int]]) -> List[int]:
         """Parse layer specification into list of indices."""
@@ -135,8 +134,8 @@ class NPTModelWrapper(nn.Module):
         if 'output_hidden_states' not in kwargs:
             kwargs['output_hidden_states'] = True
         
-        # NPT forward pass
-        npt_outputs = self._original_forward(
+        # NPT forward pass - call base model directly to avoid recursion
+        npt_outputs = self.base_model.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
             **kwargs,
@@ -189,7 +188,7 @@ class NPTModelWrapper(nn.Module):
         
         # Forward pass with original layers
         with torch.no_grad():
-            outputs = self._original_forward(
+            outputs = self.base_model.forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
